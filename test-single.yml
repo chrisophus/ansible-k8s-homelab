@@ -1,0 +1,13 @@
+---
+# Single node test deployment
+- hosts: all
+  roles:
+    - common
+    - security
+
+# Skip keepalived for single node test
+- hosts: controlplane
+  roles:
+    - controlplane
+
+# No workers in single node test

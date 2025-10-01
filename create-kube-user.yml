@@ -1,0 +1,56 @@
+---
+# Optional: Create dedicated kube user for K8s cluster management
+- name: Create dedicated kube user
+  hosts: all
+  become: yes
+  vars:
+    kube_user: kube
+    kube_groups:
+      - sudo
+      - docker  # Will be created when Docker is installed
+
+  tasks:
+    - name: Create kube user
+      user:
+        name: "{{ kube_user }}"
+        shell: /bin/bash
+        home: "/home/{{ kube_user }}"
+        create_home: yes
+        groups: "{{ kube_groups }}"
+        append: yes
+        state: present
+
+    - name: Set up passwordless sudo for kube user
+      copy:
+        dest: "/etc/sudoers.d/{{ kube_user }}"
+        content: |
+          {{ kube_user }} ALL=(ALL) NOPASSWD:ALL
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+
+    - name: Create .ssh directory for kube user
+      file:
+        path: "/home/{{ kube_user }}/.ssh"
+        state: directory
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0700'
+
+    - name: Copy your SSH key to kube user
+      copy:
+        src: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+        dest: "/home/{{ kube_user }}/.ssh/authorized_keys"
+        remote_src: yes
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0600'
+      when: ansible_user != kube_user
+
+    - name: Test sudo access for kube user
+      command: sudo -u {{ kube_user }} whoami
+      register: kube_test
+      changed_when: false
+
+    - name: Display test result
+      debug:
+        msg: "Kube user test: {{ kube_test.stdout }}"

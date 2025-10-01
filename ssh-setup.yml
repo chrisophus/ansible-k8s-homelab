@@ -1,0 +1,93 @@
+---
+- name: Setup SSH key-based authentication
+  hosts: all
+  gather_facts: yes
+  vars:
+    ssh_key_type: rsa
+    ssh_key_bits: 4096
+    ssh_key_comment: "ansible-managed-key-{{ ansible_date_time.epoch }}"
+
+  tasks:
+    - name: Generate SSH key pair on control machine
+      openssh_keypair:
+        path: "{{ playbook_dir }}/keys/id_{{ ssh_key_type }}"
+        type: "{{ ssh_key_type }}"
+        size: "{{ ssh_key_bits }}"
+        comment: "{{ ssh_key_comment }}"
+        force: no
+      delegate_to: localhost
+      run_once: true
+
+    - name: Ensure .ssh directory exists
+      file:
+        path: "/home/{{ ansible_user }}/.ssh"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+      become: yes
+
+    - name: Deploy public key to all nodes
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ lookup('file', playbook_dir + '/keys/id_' + ssh_key_type + '.pub') }}"
+        comment: "{{ ssh_key_comment }}"
+      become: yes
+
+    - name: Deploy private key to all nodes (for inter-node communication)
+      copy:
+        src: "{{ playbook_dir }}/keys/id_{{ ssh_key_type }}"
+        dest: "/home/{{ ansible_user }}/.ssh/id_{{ ssh_key_type }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+      become: yes
+
+    - name: Configure SSH client settings
+      blockinfile:
+        path: "/home/{{ ansible_user }}/.ssh/config"
+        create: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
+        block: |
+          Host plex kube1 kube2
+            User {{ ansible_user }}
+            IdentityFile ~/.ssh/id_{{ ssh_key_type }}
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host 192.168.0.*
+            User {{ ansible_user }}
+            IdentityFile ~/.ssh/id_{{ ssh_key_type }}
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+      become: yes
+
+    - name: Add all cluster nodes to known_hosts
+      known_hosts:
+        path: "/home/{{ ansible_user }}/.ssh/known_hosts"
+        name: "{{ item }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan -t rsa ' + item + ' 2>/dev/null') }}"
+        state: present
+      loop:
+        - "{{ ansible_host }}"
+        - "{{ inventory_hostname }}"
+      become: yes
+      ignore_errors: yes
+
+    - name: Test SSH connectivity between nodes
+      command: ssh -o ConnectTimeout=5 -o BatchMode=yes {{ hostvars[item].ansible_host }} "echo 'SSH test from {{ inventory_hostname }} to {{ item }} successful'"
+      loop: "{{ groups['all'] }}"
+      when: item != inventory_hostname
+      register: ssh_test
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Display SSH test results
+      debug:
+        msg: "SSH from {{ inventory_hostname }} to {{ item.item }}: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}"
+      loop: "{{ ssh_test.results }}"
+      when: ssh_test.results is defined

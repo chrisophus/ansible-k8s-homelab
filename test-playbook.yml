@@ -1,0 +1,66 @@
+---
+# Test playbook for validation without making changes
+- name: Test connectivity and gather system info
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Test basic connectivity
+      ping:
+
+    - name: Check OS version
+      debug:
+        msg: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Check available memory
+      debug:
+        msg: "Available memory: {{ ansible_memtotal_mb }}MB"
+
+    - name: Check network interfaces
+      debug:
+        msg: "Interfaces: {{ ansible_interfaces }}"
+
+    - name: Check if swap is enabled
+      debug:
+        msg: "Swap total: {{ ansible_swaptotal_mb }}MB"
+
+    - name: Check disk space
+      debug:
+        msg: "Root disk: {{ ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_total') | first | int / 1024 / 1024 / 1024 | round(1) }}GB"
+
+    - name: Test sudo access
+      command: whoami
+      become: yes
+      register: sudo_test
+
+    - name: Display sudo test result
+      debug:
+        msg: "Sudo test: {{ sudo_test.stdout }}"
+
+- name: Validate keepalived configuration
+  hosts: controlplane
+  tasks:
+    - name: Check if keepalived interface exists
+      debug:
+        msg: "Interface {{ keepalived_interface }} exists: {{ keepalived_interface in ansible_interfaces }}"
+
+    - name: Show VIP network validation
+      debug:
+        msg: "VIP {{ keepalived_vip }} should be in same subnet as {{ ansible_default_ipv4.address }}"
+
+- name: Test package availability
+  hosts: all
+  tasks:
+    - name: Check if kubernetes packages are available
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      become: yes
+
+    - name: Test package search (dry run)
+      shell: apt-cache search kubeadm | head -5
+      register: pkg_search
+      changed_when: false
+
+    - name: Display package availability
+      debug:
+        msg: "{{ pkg_search.stdout_lines }}"
