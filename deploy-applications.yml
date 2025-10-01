@@ -1,0 +1,48 @@
+---
+# Deploy applications like Plex to the cluster
+- name: Deploy applications
+  hosts: controlplane[0]
+  tasks:
+    - name: Copy application manifests
+      copy:
+        src: k8s-manifests/applications/
+        dest: /tmp/k8s-manifests/applications/
+        mode: '0644'
+      become_user: "{{ ansible_user }}"
+
+    - name: Deploy Plex
+      shell: kubectl apply -f /tmp/k8s-manifests/applications/plex.yaml
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Wait for Plex deployment to be ready
+      shell: kubectl wait --for=condition=available deployment/plex --namespace media --timeout=300s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      retries: 3
+      delay: 30
+
+    - name: Get Plex pod status
+      shell: kubectl get pods -n media -l app=plex
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      register: plex_status
+
+    - name: Display Plex access information
+      debug:
+        msg: |
+          🎬 Plex deployed successfully!
+
+          Access Plex at:
+          - Internal: http://plex.media.svc.cluster.local:32400
+          - External: http://{{ keepalived_vip }}:32400
+          - Or any node: http://[node-ip]:32400
+
+          Pod status:
+          {{ plex_status.stdout }}
+
+          Configure media directories by editing the plex.yaml file
+          and adding hostPath volumes for your media storage.

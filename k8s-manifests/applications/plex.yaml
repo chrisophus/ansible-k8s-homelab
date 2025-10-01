@@ -1,0 +1,213 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: media
+  labels:
+    name: media
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn  # Will switch to longhorn after setup
+  resources:
+    requests:
+      storage: 20Gi  # Increased for Plex config/metadata
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-data
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn  # Will switch to longhorn after setup
+  resources:
+    requests:
+      storage: 200Gi  # More space for media cache/transcoding
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex
+  namespace: media
+  labels:
+    app: plex
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: plex
+  template:
+    metadata:
+      labels:
+        app: plex
+    spec:
+      # Pin to plex node for consistent hardware access
+      nodeSelector:
+        kubernetes.io/hostname: plex
+
+      containers:
+      - name: plex
+        image: lscr.io/linuxserver/plex:latest
+        ports:
+        - containerPort: 32400
+          name: plex-web
+        - containerPort: 32469
+          name: dlna-tcp
+        - containerPort: 1900
+          name: dlna-udp
+          protocol: UDP
+        - containerPort: 5353
+          name: discovery
+          protocol: UDP
+        - containerPort: 8324
+          name: roku
+        - containerPort: 32410
+          name: gdm-1
+          protocol: UDP
+        - containerPort: 32412
+          name: gdm-2
+          protocol: UDP
+        - containerPort: 32413
+          name: gdm-3
+          protocol: UDP
+        - containerPort: 32414
+          name: gdm-4
+          protocol: UDP
+
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "America/New_York"
+        - name: VERSION
+          value: "docker"
+        - name: PLEX_CLAIM
+          value: ""  # Add your claim token here if needed
+
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: data
+          mountPath: /data
+        # Add additional media mounts as needed
+        # - name: movies
+        #   mountPath: /movies
+        # - name: tv
+        #   mountPath: /tv
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+        # Security context for media access
+        securityContext:
+          privileged: false
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+
+      # Add host path volumes for media if stored locally
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: plex-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: plex-data
+      # Uncomment and modify for local media storage
+      # - name: movies
+      #   hostPath:
+      #     path: /path/to/movies
+      # - name: tv
+      #   hostPath:
+      #     path: /path/to/tv
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex
+  namespace: media
+  labels:
+    app: plex
+spec:
+  selector:
+    app: plex
+  type: NodePort
+  ports:
+  - name: plex-web
+    port: 32400
+    targetPort: 32400
+    nodePort: 32400
+  - name: dlna-tcp
+    port: 32469
+    targetPort: 32469
+    nodePort: 32469
+  - name: roku
+    port: 8324
+    targetPort: 8324
+    nodePort: 30824
+
+---
+# Additional UDP service for DLNA/Discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-udp
+  namespace: media
+  labels:
+    app: plex
+spec:
+  selector:
+    app: plex
+  type: NodePort
+  ports:
+  - name: dlna-udp
+    port: 1900
+    targetPort: 1900
+    nodePort: 31900
+    protocol: UDP
+  - name: discovery
+    port: 5353
+    targetPort: 5353
+    nodePort: 30353
+    protocol: UDP
+  - name: gdm-1
+    port: 32410
+    targetPort: 32410
+    nodePort: 32410
+    protocol: UDP
+  - name: gdm-2
+    port: 32412
+    targetPort: 32412
+    nodePort: 32412
+    protocol: UDP
+  - name: gdm-3
+    port: 32413
+    targetPort: 32413
+    nodePort: 32413
+    protocol: UDP
+  - name: gdm-4
+    port: 32414
+    targetPort: 32414
+    nodePort: 32414
+    protocol: UDP
