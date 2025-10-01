@@ -1,0 +1,26 @@
+---
+- name: Setup SSH config for easy access
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Add SSH config for homelab nodes
+      blockinfile:
+        path: "~/.ssh/config"
+        create: yes
+        mode: '0644'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - HOMELAB"
+        block: |
+          Host plex
+            HostName 192.168.0.48
+            User ccason
+            IdentityFile ~/.ssh/id_rsa
+
+          Host kube1
+            HostName 192.168.0.79
+            User ccason
+            IdentityFile ~/.ssh/id_rsa
+
+          Host kube2
+            HostName 192.168.0.252
+            User ccason
+            IdentityFile ~/.ssh/id_rsa

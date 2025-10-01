@@ -182,33 +182,17 @@
       debug:
         msg: "Node {{ inventory_hostname }} has been reset to pre-Kubernetes state"
 
-- name: Clean up SSH keys and configuration
+- name: Clean up SSH configuration (preserve keys)
   hosts: all
   tasks:
-    - name: Remove SSH configuration block
+    - name: Remove SSH configuration block (if exists)
       blockinfile:
         path: "/home/{{ ansible_user }}/.ssh/config"
         marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
         state: absent
       ignore_errors: yes
 
-    - name: Remove cluster SSH keys
-      file:
-        path: "/home/{{ ansible_user }}/.ssh/{{ item }}"
-        state: absent
-      loop:
-        - id_rsa
-        - id_rsa.pub
-      ignore_errors: yes
-      when: ansible_user != 'root'
-
-    - name: Clean up known_hosts
-      known_hosts:
-        path: "/home/{{ ansible_user }}/.ssh/known_hosts"
-        name: "{{ item }}"
-        state: absent
-      loop: "{{ groups['all'] }}"
-      ignore_errors: yes
+    # Note: SSH keys are preserved to maintain access
 
 - name: Final cleanup message
   hosts: localhost

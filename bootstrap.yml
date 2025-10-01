@@ -8,9 +8,9 @@
     ssh_key_bits: 4096
 
   tasks:
-    - name: Create keys directory
+    - name: Ensure .ssh directory exists
       file:
-        path: "{{ playbook_dir }}/keys"
+        path: "~/.ssh"
         state: directory
         mode: '0700'
       delegate_to: localhost
@@ -18,10 +18,10 @@
 
     - name: Generate SSH key pair locally
       openssh_keypair:
-        path: "{{ playbook_dir }}/keys/id_{{ ssh_key_type }}"
+        path: "~/.ssh/id_{{ ssh_key_type }}"
         type: "{{ ssh_key_type }}"
         size: "{{ ssh_key_bits }}"
-        comment: "ansible-homelab-{{ ansible_date_time.epoch }}"
+        comment: "ansible-homelab-bootstrap"
         force: no
       delegate_to: localhost
       run_once: true
@@ -49,7 +49,7 @@
       authorized_key:
         user: "{{ ansible_user }}"
         state: present
-        key: "{{ lookup('file', playbook_dir + '/keys/id_' + ssh_key_type + '.pub') }}"
+        key: "{{ lookup('file', '~/.ssh/id_' + ssh_key_type + '.pub') }}"
         comment: "ansible-homelab-bootstrap"
       become: yes
 

@@ -6,28 +6,34 @@
   become: yes
   register: kubeadm_init
 
-- name: Extract certificate key from init output
-  set_fact:
-    kubeadm_cert_key: "{{ kubeadm_init.stdout | regex_search('--certificate-key ([a-f0-9]+)', '\\1') | first }}"
-  when: inventory_hostname == groups['controlplane'][0] and kubeadm_init.changed
+- name: Generate certificate key for additional control plane nodes
+  command: kubeadm init phase upload-certs --upload-certs
+  register: cert_key_output
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
 
-- name: Create .kube directory for ubuntu user
+- name: Extract certificate key from output
+  set_fact:
+    kubeadm_cert_key: "{{ cert_key_output.stdout_lines[-1] }}"
+  when: inventory_hostname == groups['controlplane'][0] and cert_key_output is defined
+
+- name: Create .kube directory for {{ ansible_user }} user
   file:
-    path: /home/ubuntu/.kube
+    path: /home/{{ ansible_user }}/.kube
     state: directory
-    owner: ubuntu
-    group: ubuntu
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
     mode: '0755'
   become: yes
   when: inventory_hostname == groups['controlplane'][0]
 
-- name: Copy kubeconfig for ubuntu user
+- name: Copy kubeconfig for {{ ansible_user }} user
   copy:
     src: /etc/kubernetes/admin.conf
-    dest: /home/ubuntu/.kube/config
+    dest: /home/{{ ansible_user }}/.kube/config
     remote_src: yes
-    owner: ubuntu
-    group: ubuntu
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
     mode: '0644'
   become: yes
   when: inventory_hostname == groups['controlplane'][0]
@@ -53,21 +59,26 @@
 - name: Share join command and cert key to all hosts
   add_host:
     name: "join-info"
-    kubeadm_join: "{{ hostvars[groups['controlplane'][0]].kubeadm_join }}"
+    kubeadm_join: "{{ hostvars[groups['controlplane'][0]].kubeadm_join | default('') }}"
     kubeadm_cert_key: "{{ hostvars[groups['controlplane'][0]].kubeadm_cert_key | default('') }}"
   run_once: true
+  when: hostvars[groups['controlplane'][0]].kubeadm_join is defined
 
 - name: Join additional control-plane nodes
   command: "{{ hostvars['join-info'].kubeadm_join }} --control-plane --certificate-key {{ hostvars['join-info'].kubeadm_cert_key }}"
   args:
     creates: /etc/kubernetes/kubelet.conf
-  when: inventory_hostname != groups['controlplane'][0] and hostvars['join-info'].kubeadm_cert_key != ''
+  when:
+    - inventory_hostname != groups['controlplane'][0]
+    - hostvars['join-info'].kubeadm_cert_key is defined
+    - hostvars['join-info'].kubeadm_cert_key != ''
   become: yes
 
 - name: Ensure control-plane nodes are schedulable
-  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  shell: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
   become: yes
+  ignore_errors: yes
