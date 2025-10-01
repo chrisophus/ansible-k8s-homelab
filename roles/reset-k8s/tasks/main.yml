@@ -1,0 +1,188 @@
+---
+- name: Drain node (if cluster is running)
+  command: kubectl drain {{ inventory_hostname }} --delete-emptydir-data --force --ignore-daemonsets --timeout=60s
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  ignore_errors: yes
+  when: groups['controlplane'] is defined and groups['controlplane'] | length > 0
+
+- name: Reset kubeadm
+  command: kubeadm reset -f
+  ignore_errors: yes
+  become: yes
+
+- name: Stop and disable kubelet
+  systemd:
+    name: kubelet
+    state: stopped
+    enabled: no
+  ignore_errors: yes
+  become: yes
+
+- name: Stop and disable containerd
+  systemd:
+    name: containerd
+    state: stopped
+    enabled: no
+  ignore_errors: yes
+  become: yes
+
+- name: Unhold Kubernetes packages before removal
+  command: apt-mark unhold {{ item }}
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+    - containerd
+  ignore_errors: yes
+  become: yes
+
+- name: Stop all container processes
+  shell: |
+    killall -9 kubelet kubeadm kubectl containerd containerd-shim containerd-shim-runc-v2 || true
+    systemctl stop containerd kubelet || true
+  ignore_errors: yes
+  become: yes
+
+- name: Remove Kubernetes packages
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+      - containerd
+      - kubernetes-cni
+      - cri-tools
+    state: absent
+    purge: yes
+    autoremove: yes
+  ignore_errors: yes
+  become: yes
+
+- name: Remove Kubernetes directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes
+    - /var/lib/kubelet
+    - /var/lib/etcd
+    - /etc/cni/net.d
+    - /opt/cni/bin
+    - /var/lib/containerd
+    - /etc/containerd
+    - /var/lib/calico
+    - /var/lib/cni
+    - /home/{{ ansible_user }}/.kube
+  become: yes
+
+- name: Remove Kubernetes APT repositories (keep Docker for Plex)
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/kubernetes.list
+    - /etc/apt/keyrings/kubernetes-apt-keyring.asc
+    - /etc/apt/keyrings/kubernetes-apt-keyring-v1.31.asc
+  become: yes
+
+# Note: Plex now runs in Kubernetes, so we can clean up Docker repos if needed
+# Keeping Docker repo for potential future use
+
+- name: Remove ALL Kubernetes repository entries
+  shell: |
+    # Remove any kubernetes sources files
+    rm -f /etc/apt/sources.list.d/*kubernetes*
+    rm -f /etc/apt/sources.list.d/*k8s*
+    # Remove from main sources.list if added there
+    sed -i '/kubernetes/d' /etc/apt/sources.list
+    sed -i '/k8s.io/d' /etc/apt/sources.list
+  ignore_errors: yes
+  become: yes
+
+- name: Clean APT cache and fix broken packages
+  shell: |
+    apt-get clean
+    apt-get autoclean
+    rm -rf /var/lib/apt/lists/*
+    apt-get update
+    apt-get -f install -y || true
+  ignore_errors: yes
+  become: yes
+
+- name: Remove kernel modules configuration
+  file:
+    path: /etc/modules-load.d/k8s.conf
+    state: absent
+  become: yes
+
+- name: Remove sysctl configurations
+  file:
+    path: /etc/sysctl.d/k8s.conf
+    state: absent
+  ignore_errors: yes
+  become: yes
+
+- name: Restore swap in fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^# (.+\s+swap\s+.*)$'
+    replace: '\1'
+  ignore_errors: yes
+  become: yes
+
+- name: Enable swap if it was disabled
+  command: swapon -a
+  ignore_errors: yes
+  become: yes
+
+- name: Clean up iptables rules
+  command: "{{ item }}"
+  loop:
+    - iptables -F
+    - iptables -t nat -F
+    - iptables -t mangle -F
+    - iptables -X
+  ignore_errors: yes
+  become: yes
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+  become: yes
+
+- name: Final APT cache update and verification
+  shell: |
+    apt-get update
+    apt-get check
+  register: apt_check
+  ignore_errors: yes
+  become: yes
+
+- name: Verify clean state
+  shell: |
+    echo "=== Verifying Reset ==="
+    echo "Kubernetes packages:"
+    dpkg -l | grep -E 'kube|containerd' || echo "None found (good)"
+    echo "Kubernetes processes:"
+    pgrep -f 'kube|containerd' || echo "None running (good)"
+    echo "APT status:"
+    apt-get check
+  register: verification
+  become: yes
+
+- name: Display verification results
+  debug:
+    var: verification.stdout_lines
+
+- name: Autoremove unused packages
+  apt:
+    autoremove: yes
+    purge: yes
+  ignore_errors: yes
+  become: yes
+
+- name: Display reset status
+  debug:
+    msg: "Kubernetes cluster has been reset on {{ inventory_hostname }}"

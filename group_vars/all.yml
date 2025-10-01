@@ -1,12 +1,19 @@
-# Kubernetes version
-kube_version: "1.30.0-1.1"
-kube_version_short: "v1.30.0"
+# Target Kubernetes version for both install and upgrade
+kube_target_version: "1.34.*"
+kube_target_version_short: "v1.34"
 
-# Container runtime
-containerd_version: "1.7.13-1"
+# Container runtime (use flexible versioning)
+containerd_version: "1.7.*"
 
 # Keepalived VIP configuration
-keepalived_interface: "eth0"          # Replace with correct NIC name
-keepalived_vip: "192.168.1.100"
-keepalived_auth_pass: "changeme123!"  # Change this in production
-keepalived_priority: 100             # Will be overridden per host
+# REQUIRED: Set these variables for your environment
+network_interface: "enp3s0"              # Your ethernet interface
+cluster_vip: "192.168.0.100"             # Your VIP address
+keepalived_password: "K33pAl1v3d$3cur3!"      # Secure keepalived password
+keepalived_interface: "{{ network_interface }}"
+keepalived_vip: "{{ cluster_vip }}"
+keepalived_auth_pass: "{{ keepalived_password }}"
+keepalived_priority: 100                 # Will be overridden per host
+
+# Note: For application deployments (Longhorn, Prometheus, Plex),
+# use Helm directly rather than Ansible automation

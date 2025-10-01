@@ -1,0 +1,58 @@
+---
+# Add new control plane nodes to existing cluster
+- name: Prepare new control plane nodes
+  hosts: new_controlplanes
+  roles:
+    - common
+    - security
+    - keepalived
+
+- name: Generate fresh tokens and certificate key for control plane
+  hosts: controlplane[0]
+  tasks:
+    - name: Generate fresh certificate key
+      command: kubeadm init phase upload-certs --upload-certs
+      register: fresh_cert_key_output
+      become: yes
+
+    - name: Extract fresh certificate key
+      set_fact:
+        fresh_cert_key: "{{ fresh_cert_key_output.stdout_lines[-1] }}"
+
+    - name: Generate control plane join command
+      command: kubeadm token create --print-join-command
+      register: cp_join_cmd
+      become: yes
+
+    - name: Save control plane join command
+      set_fact:
+        cp_join: "{{ cp_join_cmd.stdout }}"
+
+    - name: Share control plane join info
+      add_host:
+        name: "cp-join-info"
+        cp_join: "{{ cp_join }}"
+        cert_key: "{{ fresh_cert_key }}"
+      run_once: true
+
+- name: Join new control plane nodes
+  hosts: new_controlplanes
+  tasks:
+    - name: Join cluster as control plane
+      command: "{{ hostvars['cp-join-info'].cp_join }} --control-plane --certificate-key {{ hostvars['cp-join-info'].cert_key }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      become: yes
+
+- name: Display completion message
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: Show completion
+      debug:
+        msg: |
+          ✅ Control plane nodes added successfully!
+
+          Verify with: kubectl get nodes
+          Check cluster status: kubectl get pods -n kube-system

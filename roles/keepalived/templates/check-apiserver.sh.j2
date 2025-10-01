@@ -1,0 +1,24 @@
+#!/bin/bash
+# Keepalived health check script for Kubernetes API server
+# This script verifies the API server is healthy before allowing keepalived to claim the VIP
+
+set -e
+
+APISERVER_VIP="{{ keepalived_vip }}"
+APISERVER_DEST_PORT=6443
+ERRORFILE=/tmp/keepalived-check-apiserver.error
+
+# Check if API server port is listening locally
+if ! ss -lnt | grep -q ":${APISERVER_DEST_PORT}"; then
+    echo "API server port ${APISERVER_DEST_PORT} not listening" > ${ERRORFILE}
+    exit 1
+fi
+
+# Check if API server is responding to health check
+if curl -sk --max-time 2 https://localhost:${APISERVER_DEST_PORT}/healthz -o /dev/null; then
+    rm -f ${ERRORFILE}
+    exit 0
+else
+    echo "API server health check failed" > ${ERRORFILE}
+    exit 1
+fi

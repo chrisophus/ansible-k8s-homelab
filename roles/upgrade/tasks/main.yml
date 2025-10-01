@@ -1,76 +1,138 @@
-- name: Unhold kubeadm for upgrade
-  apt:
-    name: kubeadm
-    state: present
-    mark_unhold: yes
+- name: Add new Kubernetes apt key for target version
+  get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/{{ kube_target_version_short }}/deb/Release.key"
+    dest: "/etc/apt/keyrings/kubernetes-apt-keyring-{{ kube_target_version_short }}.asc"
+    mode: '0644'
   become: yes
+
+- name: Add new Kubernetes apt repository for target version
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring-{{ kube_target_version_short }}.asc] https://pkgs.k8s.io/core:/stable:/{{ kube_target_version_short }}/deb/ /"
+    state: present
+  become: yes
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+  become: yes
+
+- name: Unhold kubeadm for upgrade
+  command: apt-mark unhold kubeadm
+  become: yes
+  changed_when: false
 
 - name: Upgrade kubeadm
   apt:
-    name: "kubeadm={{ kube_version }}"
+    name: "kubeadm={{ kube_target_version }}"
     state: present
     update_cache: yes
   become: yes
 
 - name: Hold kubeadm after upgrade
-  apt:
-    name: kubeadm
-    state: present
-    mark_hold: yes
+  command: apt-mark hold kubeadm
+  become: yes
+  changed_when: false
+
+- name: Get the exact kubeadm version
+  command: kubeadm version -o short
+  register: kubeadm_version_output
   become: yes
 
-- name: kubeadm upgrade apply (first control-plane only)
-  command: kubeadm upgrade apply -y {{ kube_version_short }}
-  when: inventory_hostname == groups['controlplane'][0]
+- name: Extract kubeadm version
+  set_fact:
+    kubeadm_exact_version: "{{ kubeadm_version_output.stdout }}"
+
+- name: Get current kubelet version
+  command: kubelet --version
+  register: kubelet_version_output
   become: yes
+
+- name: Check if node is already upgraded
+  set_fact:
+    node_already_upgraded: "{{ kube_target_version_short in kubelet_version_output.stdout }}"
+
+- name: Display upgrade status
+  debug:
+    msg: "Node {{ inventory_hostname }} upgrade status: {{ 'ALREADY UPGRADED' if node_already_upgraded else 'NEEDS UPGRADE' }}"
+
+- name: kubeadm upgrade apply (first control-plane only)
+  command: kubeadm upgrade apply -y {{ kubeadm_exact_version }}
+  when:
+    - inventory_hostname == groups['controlplane'][0]
+    - not node_already_upgraded
+  become: yes
+  async: 600
+  poll: 10
 
 - name: kubeadm upgrade node (others)
   command: kubeadm upgrade node
-  when: inventory_hostname != groups['controlplane'][0]
+  when:
+    - inventory_hostname != groups['controlplane'][0]
+    - not node_already_upgraded
   become: yes
+  async: 300
+  poll: 10
 
 - name: Drain node before kubelet upgrade
   command: kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --force --grace-period=60 --timeout=10m
   delegate_to: "{{ groups['controlplane'][0] }}"
-  when: "'workers' in group_names or 'controlplane' in group_names"
+  when:
+    - "'workers' in group_names or 'controlplane' in group_names"
+    - not node_already_upgraded
   become: yes
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
+  retries: 3
+  delay: 30
+  register: drain_result
+  until: drain_result is succeeded
 
 - name: Unhold kubelet and kubectl for upgrade
-  apt:
-    name: "{{ item }}"
-    state: present
-    mark_unhold: yes
+  command: apt-mark unhold {{ item }}
   loop:
     - kubelet
     - kubectl
+  when: not node_already_upgraded
   become: yes
+  changed_when: false
 
 - name: Upgrade kubelet and kubectl
   apt:
     name:
-      - "kubelet={{ kube_version }}"
-      - "kubectl={{ kube_version }}"
+      - "kubelet={{ kube_target_version }}"
+      - "kubectl={{ kube_target_version }}"
     state: present
+  when: not node_already_upgraded
   become: yes
 
 - name: Hold kubelet and kubectl after upgrade
-  apt:
-    name: "{{ item }}"
-    state: present
-    mark_hold: yes
+  command: apt-mark hold {{ item }}
   loop:
     - kubelet
     - kubectl
+  when: not node_already_upgraded
   become: yes
+  changed_when: false
 
 - name: Restart kubelet
   systemd:
     name: kubelet
     state: restarted
     daemon_reload: yes
+  when: not node_already_upgraded
   become: yes
+
+- name: Wait for API server to be ready
+  uri:
+    url: "https://{{ keepalived_vip }}:6443/healthz"
+    method: GET
+    validate_certs: no
+  register: api_health
+  until: api_health.status == 200
+  retries: 30
+  delay: 10
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
 
 - name: Uncordon node after upgrade
   command: kubectl uncordon {{ inventory_hostname }}
@@ -79,9 +141,22 @@
   become: yes
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
+  retries: 5
+  delay: 10
+  until: uncordon_result is succeeded
+  register: uncordon_result
+
+- name: Ensure all nodes are uncordoned
+  shell: kubectl uncordon {{ item }} || true
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  loop: "{{ groups['all'] }}"
+  run_once: true
+  become: yes
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
 
 - name: Ensure control-plane taints removed
-  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  shell: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
   become: yes

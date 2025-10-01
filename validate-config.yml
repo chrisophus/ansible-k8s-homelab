@@ -1,0 +1,61 @@
+---
+# Validate required configuration variables
+- name: Validate Configuration
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Check required variables are defined
+      assert:
+        that:
+          - network_interface is defined
+          - cluster_vip is defined
+          - keepalived_password is defined
+        fail_msg: |
+          ERROR: Required configuration variables are missing!
+
+          Please copy group_vars/all.yml.example to group_vars/all.yml
+          and set the following required variables:
+
+          {% if network_interface is not defined %}
+          - network_interface: "your-ethernet-interface"  # e.g., eth0, enp3s0
+          {% endif %}
+          {% if cluster_vip is not defined %}
+          - cluster_vip: "your-vip-address"              # e.g., 192.168.1.100
+          {% endif %}
+          {% if keepalived_password is not defined %}
+          - keepalived_password: "secure-password"        # Change this!
+          {% endif %}
+        success_msg: "✅ All required configuration variables are set!"
+
+    - name: Validate IP address format
+      assert:
+        that:
+          - cluster_vip | regex_search('^(\d{1,3}\.){3}\d{1,3}$') != ""
+        fail_msg: "ERROR: cluster_vip '{{ cluster_vip }}' is not a valid IP address format"
+        success_msg: "✅ VIP address format is valid"
+
+    - name: Check for insecure default passwords
+      assert:
+        that:
+          - keepalived_password != "changeme123!"
+          - keepalived_password != "homelab2024!"
+        fail_msg: |
+          ERROR: You're using default/insecure passwords!
+
+          Please set a secure password for:
+          - keepalived_password
+
+          Use a strong, unique password.
+        success_msg: "✅ No default passwords detected"
+
+    - name: Display configuration summary
+      debug:
+        msg: |
+          📋 Configuration Summary:
+          - Network Interface: {{ network_interface }}
+          - Cluster VIP: {{ cluster_vip }}
+          - Keepalived Password: [CONFIGURED]
+
+          ✅ Configuration validation passed!
+          Ready to deploy cluster.

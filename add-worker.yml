@@ -1,0 +1,46 @@
+---
+# Add new worker nodes to existing cluster
+- name: Prepare new worker nodes
+  hosts: new_workers
+  roles:
+    - common
+    - security
+
+- name: Generate fresh join token for workers
+  hosts: controlplane[0]
+  tasks:
+    - name: Generate worker join command
+      command: kubeadm token create --print-join-command
+      register: worker_join_cmd
+      become: yes
+
+    - name: Save worker join command
+      set_fact:
+        worker_join: "{{ worker_join_cmd.stdout }}"
+
+    - name: Share worker join command
+      add_host:
+        name: "worker-join-info"
+        worker_join: "{{ worker_join }}"
+      run_once: true
+
+- name: Join new worker nodes
+  hosts: new_workers
+  tasks:
+    - name: Join cluster as worker
+      command: "{{ hostvars['worker-join-info'].worker_join }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      become: yes
+
+- name: Display completion message
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: Show completion
+      debug:
+        msg: |
+          ✅ Worker nodes added successfully!
+
+          Verify with: kubectl get nodes

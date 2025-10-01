@@ -1,0 +1,82 @@
+---
+# Bootstrap playbook for initial setup when you only have password access
+- name: Bootstrap SSH access with password authentication
+  hosts: all
+  gather_facts: no
+  vars:
+    ssh_key_type: rsa
+    ssh_key_bits: 4096
+
+  tasks:
+    - name: Ensure .ssh directory exists
+      file:
+        path: "~/.ssh"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Generate SSH key pair locally
+      openssh_keypair:
+        path: "~/.ssh/id_{{ ssh_key_type }}"
+        type: "{{ ssh_key_type }}"
+        size: "{{ ssh_key_bits }}"
+        comment: "ansible-homelab-bootstrap"
+        force: no
+      delegate_to: localhost
+      run_once: true
+
+    - name: Wait for SSH to be available
+      wait_for_connection:
+        connect_timeout: 20
+        sleep: 5
+        delay: 5
+        timeout: 300
+
+    - name: Gather facts after connection
+      setup:
+
+    - name: Create .ssh directory
+      file:
+        path: "/home/{{ ansible_user }}/.ssh"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+      become: yes
+
+    - name: Install public key
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ lookup('file', '~/.ssh/id_' + ssh_key_type + '.pub') }}"
+        comment: "ansible-homelab-bootstrap"
+      become: yes
+
+    - name: Disable password authentication (optional - be careful!)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        backup: yes
+      become: yes
+      when: disable_password_auth | default(false) | bool
+      notify: restart ssh
+
+    - name: Test SSH key authentication
+      command: ssh -o PasswordAuthentication=no -o ConnectTimeout=5 {{ ansible_user }}@{{ ansible_host }} "echo 'Key auth successful'"
+      delegate_to: localhost
+      register: key_test
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Display key auth test results
+      debug:
+        msg: "SSH key auth test: {{ 'SUCCESS' if key_test.rc == 0 else 'FAILED - ' + key_test.stderr }}"
+
+  handlers:
+    - name: restart ssh
+      systemd:
+        name: ssh
+        state: restarted
+      become: yes

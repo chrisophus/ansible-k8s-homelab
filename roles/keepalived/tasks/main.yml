@@ -5,6 +5,22 @@
     update_cache: yes
   become: yes
 
+- name: Create keepalived config directory
+  file:
+    path: /etc/keepalived
+    state: directory
+    mode: '0755'
+  become: yes
+
+- name: Install API server health check script
+  template:
+    src: check-apiserver.sh.j2
+    dest: /usr/local/bin/check-apiserver.sh
+    mode: '0755'
+  become: yes
+  notify:
+    - Restart keepalived
+
 - name: Configure keepalived
   template:
     src: keepalived.conf.j2

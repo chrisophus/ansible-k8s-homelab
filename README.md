@@ -1,105 +1,208 @@
-# Kubernetes Homelab Cluster
+# Kubernetes HA Homelab with Ansible
 
-This Ansible playbook deploys a highly available 3-node Kubernetes cluster optimized for homelab use.
-
-## Features
-- All nodes are both control-plane and workers (maximum resource efficiency)
-- High availability via keepalived virtual IP
-- Automatic OS security updates with scheduled reboots
-- Prometheus monitoring with node_exporter
-- Zero-downtime cluster upgrades
-- Idempotent operations for reliable re-runs
-
-## Prerequisites
-- 3 Ubuntu 22.04+ nodes with SSH access
-- User with sudo privileges
-- Network connectivity between all nodes
-- Update the inventory.ini with your node IPs
-
-## Quick Start
-
-1. **Configure your inventory:**
-   ```bash
-   # Edit inventory.ini with your node IPs
-   vim inventory.ini
-   ```
-
-2. **Update variables:**
-   ```bash
-   # Edit group_vars/all.yml
-   # - Set correct network interface name (replace eth0)
-   # - Change keepalived password
-   # - Adjust VIP to match your network
-   vim group_vars/all.yml
-   ```
-
-3. **Deploy cluster:**
-   ```bash
-   ansible-playbook -i inventory.ini site.yml
-   ```
-
-4. **Access your cluster:**
-   ```bash
-   # Copy kubeconfig from the first control plane node
-   scp ubuntu@192.168.1.10:~/.kube/config ~/.kube/config
-
-   # Test access via VIP
-   kubectl --server=https://192.168.1.100:6443 get nodes
-   ```
-
-## Upgrades
-
-To upgrade Kubernetes:
-
-1. Update `kube_version` and `kube_version_short` in `group_vars/all.yml`
-2. Run the upgrade playbook:
-   ```bash
-   ansible-playbook -i inventory.ini upgrade.yml
-   ```
-
-The upgrade process:
-- Runs serially (one node at a time)
-- Drains workloads before upgrading
-- Ensures zero downtime
-- Maintains HA throughout the process
-
-## Security Features
-
-- **Automatic OS updates**: Security patches applied daily
-- **Scheduled reboots**: Automatic reboots at 3 AM when required
-- **Monitoring**: Prometheus metrics for reboot status
-- **Package holds**: Prevents accidental K8s component upgrades
+A production-grade 3-node HA Kubernetes cluster deployment using Ansible, featuring:
+- **High Availability**: 3 control plane nodes with keepalived VIP
+- **Networking**: Calico CNI with proper IPAM
+- **Security**: Automatic updates with reboot management
+- **Foundation**: Ready for application deployment via Helm
 
 ## Architecture
 
-- **Keepalived**: Provides floating VIP for API server HA
-- **Flannel CNI**: Pod networking (10.244.0.0/16)
-- **Containerd**: Container runtime
-- **All nodes schedulable**: Control plane nodes run workloads
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│    node1    │  │    node2    │  │    node3    │
+│ (control)   │  │ (control)   │  │ (control)   │
+│   prio:110  │  │   prio:100  │  │   prio:90   │
+└─────────────┘  └─────────────┘  └─────────────┘
+       │                │                │
+       └────────────────┼────────────────┘
+                        │
+                 VIP: 192.168.1.100
+```
+
+## Prerequisites
+
+- 3 Ubuntu 22.04+ servers with sudo access
+- 4GB+ RAM and 2+ CPU cores per node
+- Network connectivity between all nodes
+- SSH key-based authentication configured
+
+## Quick Start
+
+1. **Clone and configure**:
+   ```bash
+   git clone <this-repo>
+   cd ansible-k8s-homelab
+   ```
+
+2. **Edit inventory.ini** with your actual hosts:
+   ```ini
+   [controlplane]
+   node1 ansible_host=192.168.1.10 keepalived_priority=110
+   node2 ansible_host=192.168.1.11 keepalived_priority=100
+   node3 ansible_host=192.168.1.12 keepalived_priority=90
+
+   [all:vars]
+   ansible_user=your-ssh-user
+   ```
+
+3. **Configure variables** in `group_vars/all.yml`:
+   ```yaml
+   # Network configuration
+   network_interface: "eth0"
+   cluster_vip: "192.168.1.100"
+   keepalived_password: "your-secure-password"
+
+   # Monitoring passwords
+   grafana_password: "your-grafana-password"
+   ```
+
+4. **Validate configuration**:
+   ```bash
+   # Validate your configuration (recommended)
+   ansible-playbook validate-config.yml
+   ```
+
+5. **Deploy the cluster**:
+   ```bash
+   # Deploy base cluster
+   ansible-playbook -i inventory.ini site.yml
+   ```
+
+## Components
+
+### Core Cluster
+- **Kubernetes**: v1.33.x with kubeadm
+- **CNI**: Calico with IPAM
+- **Load Balancer**: keepalived with VIP
+- **Runtime**: containerd
+- **Security**: Automatic updates with scheduled reboots
+
+### Post-Deployment Applications
+Deploy these separately using Helm:
+- **Storage**: Longhorn distributed storage
+- **Monitoring**: Prometheus/Grafana stack
+- **Applications**: Plex, Jellyfin, or other services
+
+## Access Points
+
+After deployment:
+
+- **Kubernetes API**: `https://<cluster_vip>:6443`
+- **kubectl**: Configure with `scp user@<any-node>:~/.kube/config ~/.kube/config`
+
+## Configuration
+
+### Network Settings
+Configure in `group_vars/all.yml`:
+```yaml
+network_interface: "eth0"           # Your network interface
+cluster_vip: "192.168.1.100"       # VIP for HA
+keepalived_password: "secure-pass"  # keepalived auth
+```
+
+## Playbooks
+
+- `site.yml` - Main cluster deployment
+- `validate-config.yml` - Configuration validation
+- `reset-k8s-only.yml` - Cluster reset/cleanup
+
+## Maintenance
+
+### Adding Nodes
+See `README-adding-nodes.md` for detailed instructions.
+
+### Backup
+```bash
+# Backup etcd
+kubectl -n kube-system get secret etcd-certs -o yaml > etcd-backup.yaml
+
+# Application data backups depend on your storage solution
+```
+
+### Updates
+```bash
+# Update Kubernetes version in group_vars/all.yml, then:
+ansible-playbook -i inventory.ini site.yml
+```
+
+## Next Steps: Application Deployment
+
+After your cluster is running, deploy applications using Helm:
+
+### Longhorn Storage
+```bash
+helm repo add longhorn https://charts.longhorn.io
+helm repo update
+helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace
+```
+
+### Prometheus/Grafana Stack
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace
+```
 
 ## Troubleshooting
 
-**Check cluster status:**
+### Common Issues
+
+1. **VIP not responding**:
+   ```bash
+   # Check keepalived status
+   ansible all -i inventory.ini -m shell -a "systemctl status keepalived"
+   ```
+
+2. **Pods stuck pending**:
+   ```bash
+   # Check node resources
+   kubectl describe nodes
+   kubectl get events --sort-by=.metadata.creationTimestamp
+   ```
+
+3. **Storage issues**:
+   ```bash
+   # Check storage driver status (depends on your solution)
+   kubectl get pods -n <storage-namespace>
+   kubectl get pv,pvc --all-namespaces
+   ```
+
+### Logs
 ```bash
-kubectl get nodes -o wide
-kubectl get pods -A
+# Cluster logs
+kubectl logs -n kube-system -l component=kube-apiserver
+kubectl logs -n kube-system -l k8s-app=calico-node
+
+# Application logs (examples)
+kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus
+kubectl logs -n <app-namespace> -l app=<app-name>
 ```
 
-**Check keepalived status:**
-```bash
-ansible all -i inventory.ini -m shell -a "systemctl status keepalived"
-```
+## Security Notes
 
-**View VIP status:**
-```bash
-ansible all -i inventory.ini -m shell -a "ip addr show | grep 192.168.1.100"
-```
+- Change default passwords in `group_vars/all.yml`
+- Use vault encryption for sensitive variables:
+  ```bash
+  ansible-vault encrypt group_vars/secrets.yml
+  ```
+- Configure firewall rules for cluster ports
+- Use TLS for all external access
 
-**Reboot monitoring:**
-```bash
-# Check if reboot is required
-ansible all -i inventory.ini -m shell -a "ls -la /var/run/reboot-required"
+## License
 
-# Check reboot metric
-curl http://NODE_IP:9100/metrics | grep reboot_required
-```
+MIT License - see LICENSE file for details.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Test your changes
+4. Submit a pull request
+
+## Support
+
+For issues and questions:
+- Check the troubleshooting section
+- Review Kubernetes and component documentation
+- Open an issue with detailed logs and configuration

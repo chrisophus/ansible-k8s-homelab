@@ -1,0 +1,120 @@
+---
+# Complete reset playbook - resets everything to clean state
+- name: Reset monitoring stack
+  hosts: controlplane[0]
+  roles:
+    - reset-monitoring
+
+- name: Reset storage systems
+  hosts: controlplane[0]
+  roles:
+    - reset-storage
+
+- name: Reset Kubernetes cluster
+  hosts: all
+  become: yes
+  gather_facts: yes
+  roles:
+    - reset-k8s
+
+- name: Reset keepalived and security configurations
+  hosts: all
+  tasks:
+    - name: Stop and disable keepalived
+      systemd:
+        name: keepalived
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+      become: yes
+
+    - name: Remove virtual IP from interface
+      command: ip addr del {{ keepalived_vip }}/24 dev {{ keepalived_interface }}
+      ignore_errors: yes
+      when: keepalived_vip is defined and inventory_hostname in groups['controlplane']
+      become: yes
+
+    - name: Remove keepalived directory
+      file:
+        path: /etc/keepalived
+        state: absent
+      become: yes
+
+    - name: Remove systemd service files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/node_exporter.service
+        - /etc/systemd/system/reboot-required.service
+        - /etc/systemd/system/reboot-required.timer
+        - /etc/systemd/system/temperature-exporter.service
+        - /usr/local/bin/node_exporter
+        - /usr/local/bin/reboot_metric.sh
+        - /usr/local/bin/temperature_exporter.sh
+        - /usr/local/bin/helm
+      become: yes
+
+    - name: Remove cron jobs
+      cron:
+        name: "reboot-required metric update"
+        state: absent
+      ignore_errors: yes
+      become: yes
+
+    - name: Remove unattended-upgrades configuration
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/apt.conf.d/20auto-upgrades
+      ignore_errors: yes
+      become: yes
+
+    - name: Restore original unattended-upgrades config
+      lineinfile:
+        path: /etc/apt/apt.conf.d/50unattended-upgrades
+        regexp: '^Unattended-Upgrade::Automatic-Reboot'
+        state: absent
+      ignore_errors: yes
+      become: yes
+
+    - name: Restore original unattended-upgrades reboot time
+      lineinfile:
+        path: /etc/apt/apt.conf.d/50unattended-upgrades
+        regexp: '^Unattended-Upgrade::Automatic-Reboot-Time'
+        state: absent
+      ignore_errors: yes
+      become: yes
+
+- name: Clean up SSH configuration (preserve keys)
+  hosts: all
+  tasks:
+    - name: Remove SSH configuration block (if exists)
+      blockinfile:
+        path: "/home/{{ ansible_user }}/.ssh/config"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
+        state: absent
+      ignore_errors: yes
+
+- name: Final cleanup message
+  hosts: localhost
+  tasks:
+    - name: Display completion message
+      debug:
+        msg: |
+          🧹 Complete reset completed!
+
+          All components have been reset to their pre-installation state:
+          - Monitoring stack removed
+          - Storage systems cleaned
+          - Kubernetes cluster reset
+          - Security configurations restored
+          - SSH keys preserved
+
+          Your nodes are now ready for a fresh installation.
+
+          Available reset options:
+          - ansible-playbook -i inventory.ini reset.yml           # Complete reset
+          - ansible-playbook -i inventory.ini reset-k8s-only.yml  # Just Kubernetes
+          - ansible-playbook -i inventory.ini reset-monitoring-only.yml # Just monitoring

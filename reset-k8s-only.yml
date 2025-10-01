@@ -1,0 +1,43 @@
+---
+# Reset only the Kubernetes cluster (keep monitoring/storage configs)
+- name: Reset Kubernetes cluster
+  hosts: all
+  become: yes
+  gather_facts: yes
+  roles:
+    - reset-k8s
+
+- name: Reset keepalived and networking
+  hosts: controlplane
+  tasks:
+    - name: Stop and disable keepalived
+      systemd:
+        name: keepalived
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+      become: yes
+
+    - name: Remove virtual IP from interface
+      command: ip addr del {{ keepalived_vip }}/24 dev {{ keepalived_interface }}
+      ignore_errors: yes
+      when: keepalived_vip is defined
+      become: yes
+
+    - name: Remove keepalived directory
+      file:
+        path: /etc/keepalived
+        state: absent
+      become: yes
+
+- name: Display completion message
+  hosts: localhost
+  tasks:
+    - name: Show completion
+      debug:
+        msg: |
+          🧹 Kubernetes cluster reset completed!
+
+          All nodes have been reset to pre-Kubernetes state.
+          You can now redeploy with:
+          ansible-playbook -i inventory.ini site.yml

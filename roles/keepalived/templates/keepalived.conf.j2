@@ -1,5 +1,22 @@
+# Global configuration
+global_defs {
+    enable_script_security
+    script_user root
+}
+
+# Health check script for API server
+vrrp_script check_apiserver {
+    script "/usr/local/bin/check-apiserver.sh"
+    interval 3       # Check every 3 seconds
+    timeout 2        # Timeout after 2 seconds
+    weight -50       # Reduce priority by 50 if check fails
+    fall 2           # Require 2 failures before DOWN
+    rise 2           # Require 2 successes before UP
+}
+
 vrrp_instance VI_1 {
-    state BACKUP
+    state {% if keepalived_priority == ((groups['controlplane'] | map('extract', hostvars, 'keepalived_priority') | map('int') | max)) %}MASTER{% else %}BACKUP{% endif %}
+
     interface {{ keepalived_interface }}
     virtual_router_id 51
     priority {{ keepalived_priority }}
@@ -10,5 +27,8 @@ vrrp_instance VI_1 {
     }
     virtual_ipaddress {
         {{ keepalived_vip }}
+    }
+    track_script {
+        check_apiserver
     }
 }

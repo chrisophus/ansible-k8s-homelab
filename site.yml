@@ -8,7 +8,3 @@
   roles:
     - keepalived
     - controlplane
-
-- hosts: workers
-  roles:
-    - worker

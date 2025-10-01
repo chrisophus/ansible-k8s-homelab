@@ -6,41 +6,69 @@
   become: yes
   register: kubeadm_init
 
-- name: Extract certificate key from init output
-  set_fact:
-    kubeadm_cert_key: "{{ kubeadm_init.stdout | regex_search('--certificate-key ([a-f0-9]+)', '\\1') | first }}"
-  when: inventory_hostname == groups['controlplane'][0] and kubeadm_init.changed
+- name: Generate certificate key for additional control plane nodes
+  command: kubeadm init phase upload-certs --upload-certs
+  register: cert_key_output
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
 
-- name: Create .kube directory for ubuntu user
+- name: Extract certificate key from output
+  set_fact:
+    kubeadm_cert_key: "{{ cert_key_output.stdout_lines[-1] }}"
+  when:
+    - inventory_hostname == groups['controlplane'][0]
+    - cert_key_output is defined
+    - cert_key_output.stdout_lines is defined
+    - cert_key_output.stdout_lines | length > 0
+    - not ansible_check_mode
+
+- name: Create .kube directory for {{ ansible_user }} user
   file:
-    path: /home/ubuntu/.kube
+    path: /home/{{ ansible_user }}/.kube
     state: directory
-    owner: ubuntu
-    group: ubuntu
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
     mode: '0755'
   become: yes
-  when: inventory_hostname == groups['controlplane'][0]
 
-- name: Copy kubeconfig for ubuntu user
+- name: Copy kubeconfig for {{ ansible_user }} user
   copy:
     src: /etc/kubernetes/admin.conf
-    dest: /home/ubuntu/.kube/config
+    dest: /home/{{ ansible_user }}/.kube/config
     remote_src: yes
-    owner: ubuntu
-    group: ubuntu
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
     mode: '0644'
   become: yes
-  when: inventory_hostname == groups['controlplane'][0]
 
-- name: Install Flannel CNI
-  command: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+- name: Copy Calico custom resources
+  copy:
+    src: ../../k8s-manifests/calico-custom-resources.yaml
+    dest: /tmp/calico-custom-resources.yaml
+    mode: '0644'
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+
+- name: Install Calico CNI (using local server during bootstrap)
+  shell: |
+    kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/tigera-operator.yaml
+    kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 create -f /tmp/calico-custom-resources.yaml
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
 
+- name: Wait for tigera-operator to be ready (using local server)
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 wait --for=condition=ready pod -l k8s-app=tigera-operator --namespace tigera-operator --timeout=300s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+  retries: 3
+  delay: 10
+
 - name: Generate join command
-  command: kubeadm token create --print-join-command
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 --kubeconfig=/etc/kubernetes/admin.conf create token kube-bootstrap-token --print-join-command || kubeadm token create --print-join-command
   register: join_cmd
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
@@ -53,21 +81,35 @@
 - name: Share join command and cert key to all hosts
   add_host:
     name: "join-info"
-    kubeadm_join: "{{ hostvars[groups['controlplane'][0]].kubeadm_join }}"
+    kubeadm_join: "{{ hostvars[groups['controlplane'][0]].kubeadm_join | default('') }}"
     kubeadm_cert_key: "{{ hostvars[groups['controlplane'][0]].kubeadm_cert_key | default('') }}"
   run_once: true
+  when: hostvars[groups['controlplane'][0]].kubeadm_join is defined
 
 - name: Join additional control-plane nodes
   command: "{{ hostvars['join-info'].kubeadm_join }} --control-plane --certificate-key {{ hostvars['join-info'].kubeadm_cert_key }}"
   args:
     creates: /etc/kubernetes/kubelet.conf
-  when: inventory_hostname != groups['controlplane'][0] and hostvars['join-info'].kubeadm_cert_key != ''
+  when:
+    - inventory_hostname != groups['controlplane'][0]
+    - hostvars['join-info'].kubeadm_cert_key is defined
+    - hostvars['join-info'].kubeadm_cert_key != ''
   become: yes
 
 - name: Ensure control-plane nodes are schedulable
-  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 taint nodes --all node-role.kubernetes.io/control-plane- || true
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
   become: yes
+  ignore_errors: yes
+
+- name: Remove external load balancer exclusion label from control-plane nodes
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 label nodes --all node.kubernetes.io/exclude-from-external-load-balancers- || true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
+  become: yes
+  ignore_errors: yes
