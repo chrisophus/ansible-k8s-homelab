@@ -1,77 +1,44 @@
 ---
-# Reset playbook to clean up Kubernetes installation
+# Complete reset playbook - resets everything to clean state
+- name: Reset monitoring stack
+  hosts: controlplane[0]
+  roles:
+    - reset-monitoring
+
+- name: Reset storage systems
+  hosts: controlplane[0]
+  roles:
+    - reset-storage
+
 - name: Reset Kubernetes cluster
   hosts: all
   become: yes
   gather_facts: yes
+  roles:
+    - reset-k8s
+
+- name: Reset keepalived and security configurations
+  hosts: all
   tasks:
-    - name: Drain node (if cluster is running)
-      command: kubectl drain {{ inventory_hostname }} --delete-emptydir-data --force --ignore-daemonsets --timeout=60s
-      delegate_to: "{{ groups['controlplane'][0] }}"
-      environment:
-        KUBECONFIG: /etc/kubernetes/admin.conf
-      ignore_errors: yes
-      when: groups['controlplane'] is defined and groups['controlplane'] | length > 0
-
-    - name: Reset kubeadm
-      command: kubeadm reset -f
-      ignore_errors: yes
-
-    - name: Stop and disable kubelet
-      systemd:
-        name: kubelet
-        state: stopped
-        enabled: no
-      ignore_errors: yes
-
-    - name: Stop and disable containerd
-      systemd:
-        name: containerd
-        state: stopped
-        enabled: no
-      ignore_errors: yes
-
     - name: Stop and disable keepalived
       systemd:
         name: keepalived
         state: stopped
         enabled: no
       ignore_errors: yes
+      become: yes
 
-    - name: Stop and disable node_exporter
-      systemd:
-        name: node_exporter
-        state: stopped
-        enabled: no
+    - name: Remove virtual IP from interface
+      command: ip addr del {{ keepalived_vip }}/24 dev {{ keepalived_interface }}
       ignore_errors: yes
+      when: keepalived_vip is defined and inventory_hostname in groups['controlplane']
+      become: yes
 
-    - name: Remove Kubernetes packages
-      apt:
-        name:
-          - kubelet
-          - kubeadm
-          - kubectl
-          - containerd.io
-          - keepalived
-        state: absent
-        purge: yes
-      ignore_errors: yes
-
-    - name: Remove Kubernetes directories
+    - name: Remove keepalived directory
       file:
-        path: "{{ item }}"
+        path: /etc/keepalived
         state: absent
-      loop:
-        - /etc/kubernetes
-        - /var/lib/kubelet
-        - /var/lib/etcd
-        - /etc/cni/net.d
-        - /opt/cni/bin
-        - /var/lib/containerd
-        - /etc/containerd
-        - /etc/keepalived
-        - /var/lib/node_exporter
-        - /home/ubuntu/.kube
+      become: yes
 
     - name: Remove systemd service files
       file:
@@ -81,51 +48,19 @@
         - /etc/systemd/system/node_exporter.service
         - /etc/systemd/system/reboot-required.service
         - /etc/systemd/system/reboot-required.timer
+        - /etc/systemd/system/temperature-exporter.service
         - /usr/local/bin/node_exporter
         - /usr/local/bin/reboot_metric.sh
-
-    - name: Remove Kubernetes APT repositories
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/apt/sources.list.d/kubernetes.list
-        - /etc/apt/keyrings/kubernetes-apt-keyring.asc
-        - /etc/apt/keyrings/docker.asc
-
-    - name: Remove Docker APT repository
-      apt_repository:
-        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
-        state: absent
-      ignore_errors: yes
-
-    - name: Remove kernel modules configuration
-      file:
-        path: /etc/modules-load.d/k8s.conf
-        state: absent
-
-    - name: Remove sysctl configurations
-      file:
-        path: /etc/sysctl.d/k8s.conf
-        state: absent
-      ignore_errors: yes
-
-    - name: Restore swap in fstab
-      replace:
-        path: /etc/fstab
-        regexp: '^# (.+\s+swap\s+.*)$'
-        replace: '\1'
-      ignore_errors: yes
-
-    - name: Enable swap if it was disabled
-      command: swapon -a
-      ignore_errors: yes
+        - /usr/local/bin/temperature_exporter.sh
+        - /usr/local/bin/helm
+      become: yes
 
     - name: Remove cron jobs
       cron:
         name: "reboot-required metric update"
         state: absent
       ignore_errors: yes
+      become: yes
 
     - name: Remove unattended-upgrades configuration
       file:
@@ -134,6 +69,7 @@
       loop:
         - /etc/apt/apt.conf.d/20auto-upgrades
       ignore_errors: yes
+      become: yes
 
     - name: Restore original unattended-upgrades config
       lineinfile:
@@ -141,6 +77,7 @@
         regexp: '^Unattended-Upgrade::Automatic-Reboot'
         state: absent
       ignore_errors: yes
+      become: yes
 
     - name: Restore original unattended-upgrades reboot time
       lineinfile:
@@ -148,39 +85,7 @@
         regexp: '^Unattended-Upgrade::Automatic-Reboot-Time'
         state: absent
       ignore_errors: yes
-
-    - name: Clean up iptables rules
-      command: "{{ item }}"
-      loop:
-        - iptables -F
-        - iptables -t nat -F
-        - iptables -t mangle -F
-        - iptables -X
-      ignore_errors: yes
-
-    - name: Remove virtual IP from interface
-      command: ip addr del {{ keepalived_vip }}/24 dev {{ keepalived_interface }}
-      ignore_errors: yes
-      when: keepalived_vip is defined
-
-    - name: Reload systemd daemon
-      systemd:
-        daemon_reload: yes
-
-    - name: Update package cache
-      apt:
-        update_cache: yes
-      ignore_errors: yes
-
-    - name: Autoremove unused packages
-      apt:
-        autoremove: yes
-        purge: yes
-      ignore_errors: yes
-
-    - name: Display reset status
-      debug:
-        msg: "Node {{ inventory_hostname }} has been reset to pre-Kubernetes state"
+      become: yes
 
 - name: Clean up SSH configuration (preserve keys)
   hosts: all
@@ -192,22 +97,24 @@
         state: absent
       ignore_errors: yes
 
-    # Note: SSH keys are preserved to maintain access
-
 - name: Final cleanup message
   hosts: localhost
   tasks:
     - name: Display completion message
       debug:
         msg: |
-          🧹 Reset completed!
+          🧹 Complete reset completed!
 
-          All nodes have been reset to their pre-Kubernetes state:
-          - Kubernetes components removed
-          - Configuration files cleaned up
-          - Services stopped and disabled
-          - SSH keys and config cleaned up
-          - Swap re-enabled
-          - iptables rules cleared
+          All components have been reset to their pre-installation state:
+          - Monitoring stack removed
+          - Storage systems cleaned
+          - Kubernetes cluster reset
+          - Security configurations restored
+          - SSH keys preserved
 
           Your nodes are now ready for a fresh installation.
+
+          Available reset options:
+          - ansible-playbook -i inventory.ini reset.yml           # Complete reset
+          - ansible-playbook -i inventory.ini reset-k8s-only.yml  # Just Kubernetes
+          - ansible-playbook -i inventory.ini reset-monitoring-only.yml # Just monitoring

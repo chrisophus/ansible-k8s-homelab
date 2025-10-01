@@ -1,0 +1,19 @@
+---
+# Reset only the monitoring stack
+- name: Reset monitoring stack
+  hosts: controlplane[0]
+  roles:
+    - reset-monitoring
+
+- name: Display completion message
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: Show completion
+      debug:
+        msg: |
+          🧹 Monitoring stack reset completed!
+
+          You can now redeploy with:
+          ansible-playbook -i inventory.ini deploy-monitoring.yml

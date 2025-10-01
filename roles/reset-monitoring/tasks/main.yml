@@ -1,0 +1,52 @@
+---
+- name: Uninstall monitoring Helm releases
+  shell: |
+    if command -v helm >/dev/null 2>&1; then
+      helm uninstall kube-prometheus-stack -n monitoring || true
+    fi
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Delete custom monitoring DaemonSets
+  shell: |
+    kubectl delete daemonset temperature-exporter -n monitoring || true
+    kubectl delete daemonset reboot-exporter -n monitoring || true
+    kubectl delete servicemonitor temperature-exporter -n monitoring || true
+    kubectl delete servicemonitor reboot-exporter -n monitoring || true
+    kubectl delete prometheusrule homelab-alerting-rules -n monitoring || true
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Delete monitoring namespace
+  shell: kubectl delete namespace monitoring || true
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Delete local-path-storage if monitoring installed it
+  shell: kubectl delete namespace local-path-storage || true
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+  when: reset_storage_provisioner | default(false)
+
+- name: Remove Helm binary
+  file:
+    path: /usr/local/bin/helm
+    state: absent
+  become: yes
+  when: remove_helm | default(false)
+
+- name: Wait for cleanup to complete
+  pause:
+    seconds: 10
+
+- name: Display reset status
+  debug:
+    msg: "Monitoring stack has been reset. Helm releases, DaemonSets, and namespace removed."

@@ -1,0 +1,36 @@
+---
+- name: Remove Longhorn (if installed)
+  shell: |
+    helm uninstall longhorn -n longhorn-system || true
+    kubectl delete namespace longhorn-system || true
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Remove local-path-provisioner
+  shell: kubectl delete namespace local-path-storage || true
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Clean up storage directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/local-path-provisioner
+    - /var/lib/longhorn
+  ignore_errors: yes
+  become: yes
+
+- name: Unmount any storage devices (if configured)
+  command: umount {{ item }}
+  loop: "{{ storage_devices | default([]) }}"
+  ignore_errors: yes
+  become: yes
+
+- name: Display reset status
+  debug:
+    msg: "Storage components have been reset. Longhorn and local-path-provisioner removed."

@@ -1,0 +1,105 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-alerting-rules
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: homelab.temperature
+      rules:
+        - alert: NodeTemperatureHigh
+          expr: node_cpu_temperature_celsius > 75
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU temperature on {{ $labels.instance }}"
+            description: "CPU temperature is {{ $value }}°C on {{ $labels.instance }}"
+
+        - alert: NodeTemperatureCritical
+          expr: node_cpu_temperature_celsius > 85
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "CRITICAL CPU temperature on {{ $labels.instance }}"
+            description: "CPU temperature is {{ $value }}°C on {{ $labels.instance }} - immediate action required"
+
+        - alert: DiskTemperatureHigh
+          expr: node_disk_temperature_celsius > 60
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High disk temperature on {{ $labels.instance }}"
+            description: "Disk {{ $labels.device }} temperature is {{ $value }}°C on {{ $labels.instance }}"
+
+    - name: homelab.security
+      rules:
+        - alert: RebootRequired
+          expr: node_reboot_required == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Reboot required on {{ $labels.instance }}"
+            description: "Node {{ $labels.instance }} requires a reboot for security updates"
+
+        - alert: SecurityUpdatesAvailable
+          expr: node_security_updates_available > 0
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "Security updates available on {{ $labels.instance }}"
+            description: "{{ $value }} security updates are available on {{ $labels.instance }}"
+
+        - alert: LongUptime
+          expr: node_uptime_days > 30
+          for: 1h
+          labels:
+            severity: info
+          annotations:
+            summary: "Long uptime on {{ $labels.instance }}"
+            description: "Node {{ $labels.instance }} has been running for {{ $value }} days without reboot"
+
+    - name: homelab.system
+      rules:
+        - alert: NodeDown
+          expr: up{job=~"node-exporter.*"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node exporter down on {{ $labels.instance }}"
+            description: "Node exporter has been down for more than 1 minute on {{ $labels.instance }}"
+
+        - alert: HighMemoryUsage
+          expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage on {{ $labels.instance }}"
+            description: "Memory usage is {{ $value }}% on {{ $labels.instance }}"
+
+        - alert: HighDiskUsage
+          expr: (1 - (node_filesystem_avail_bytes / node_filesystem_size_bytes)) * 100 > 85
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High disk usage on {{ $labels.instance }}"
+            description: "Disk usage is {{ $value }}% on {{ $labels.instance }} filesystem {{ $labels.mountpoint }}"
+
+        - alert: HighCPUUsage
+          expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance) * 100) > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU usage on {{ $labels.instance }}"
+            description: "CPU usage is {{ $value }}% on {{ $labels.instance }}"

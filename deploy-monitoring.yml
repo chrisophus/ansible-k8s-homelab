@@ -1,0 +1,133 @@
+---
+# Production-grade monitoring deployment playbook
+- name: Deploy monitoring stack
+  hosts: controlplane[0]
+  tasks:
+    - name: Install helm
+      get_url:
+        url: https://get.helm.sh/helm-v3.16.1-linux-amd64.tar.gz
+        dest: /tmp/helm.tar.gz
+        mode: '0644'
+      become: yes
+
+    - name: Extract helm
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp
+        remote_src: yes
+      become: yes
+
+    - name: Install helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: '0755'
+        remote_src: yes
+      become: yes
+
+    - name: Add Prometheus community helm repository
+      shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Update helm repositories
+      shell: helm repo update
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Create monitoring namespace
+      shell: kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Install local-path storage provisioner
+      shell: kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Wait for local-path-provisioner to be ready
+      shell: kubectl wait --for=condition=ready pod -l app=local-path-provisioner --namespace local-path-storage --timeout=120s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Copy Prometheus values file
+      copy:
+        src: k8s-manifests/monitoring/prometheus-values.yaml
+        dest: /tmp/prometheus-values.yaml
+        mode: '0644'
+      become_user: "{{ ansible_user }}"
+
+    - name: Install kube-prometheus-stack
+      shell: |
+        helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --values /tmp/prometheus-values.yaml \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Wait for Prometheus to be ready
+      shell: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus --namespace monitoring --timeout=300s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      retries: 3
+      delay: 30
+
+    - name: Deploy custom exporters
+      shell: kubectl apply -f /tmp/k8s-manifests/custom-exporters/
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Deploy alerting rules
+      shell: kubectl apply -f /tmp/k8s-manifests/monitoring/alerting-rules.yaml
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Copy k8s manifests to control plane
+      copy:
+        src: k8s-manifests/
+        dest: /tmp/k8s-manifests/
+        mode: '0644'
+      become_user: "{{ ansible_user }}"
+
+    - name: Wait for custom exporters to be ready
+      shell: kubectl wait --for=condition=ready pod -l app=temperature-exporter --namespace monitoring --timeout=120s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      retries: 2
+      delay: 15
+
+    - name: Display monitoring access information
+      debug:
+        msg: |
+          🎯 Production Monitoring Stack Deployed!
+
+          📊 Grafana Dashboard:
+          - URL: http://{{ keepalived_vip }}:3000
+          - Username: admin
+          - Password: homelab123!
+
+          📈 Prometheus:
+          - URL: http://{{ keepalived_vip }}:9090
+
+          🚨 AlertManager:
+          - URL: http://{{ keepalived_vip }}:9093
+
+          🌡️  Custom Metrics (auto-discovered):
+          - Temperature DaemonSet: Running on all nodes
+          - Reboot Status DaemonSet: Running on all nodes
+          - ServiceMonitors: Auto-discovery enabled
+
+          🔍 Check deployment:
+          kubectl get pods -n monitoring
+          kubectl get servicemonitors -n monitoring

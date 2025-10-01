@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: temperature-exporter
+  namespace: monitoring
+  labels:
+    app: temperature-exporter
+spec:
+  selector:
+    matchLabels:
+      app: temperature-exporter
+  template:
+    metadata:
+      labels:
+        app: temperature-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: temperature-exporter
+        image: alpine:3.18
+        ports:
+        - containerPort: 9101
+          hostPort: 9101
+          name: metrics
+        command:
+        - /bin/sh
+        - -c
+        - |
+          apk add --no-cache curl bash lm-sensors smartmontools
+
+          cat > /usr/local/bin/temperature_exporter.sh << 'EOF'
+          #!/bin/bash
+          PORT=9101
+
+          get_cpu_temp() {
+              local temp=""
+              if [ -f /host/sys/class/thermal/thermal_zone0/temp ]; then
+                  temp=$(cat /host/sys/class/thermal/thermal_zone0/temp)
+                  temp=$((temp / 1000))
+              elif command -v sensors >/dev/null 2>&1; then
+                  temp=$(sensors 2>/dev/null | grep -E "Core 0|Package id 0" | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+              fi
+              echo "${temp:-0}"
+          }
+
+          get_disk_temps() {
+              local disk_temps=""
+              for disk in $(ls /host/dev/ | grep -E '^(sd|nvme|hd)'); do
+                  if command -v smartctl >/dev/null 2>&1; then
+                      temp=$(smartctl -A /host/dev/$disk 2>/dev/null | grep -i temperature | head -1 | awk '{print $10}' | grep -oE '[0-9]+')
+                      if [ -n "$temp" ] && [ "$temp" -gt 0 ]; then
+                          disk_temps="${disk_temps}node_disk_temperature_celsius{device=\"$disk\"} $temp\n"
+                      fi
+                  fi
+              done
+              echo -e "$disk_temps"
+          }
+
+          get_thermal_zones() {
+              local thermal_temps=""
+              for zone in /host/sys/class/thermal/thermal_zone*; do
+                  if [ -d "$zone" ]; then
+                      zone_num=$(basename "$zone" | sed 's/thermal_zone//')
+                      if [ -f "$zone/temp" ]; then
+                          temp=$(cat "$zone/temp")
+                          temp=$((temp / 1000))
+                          thermal_temps="${thermal_temps}node_thermal_zone_temperature_celsius{zone=\"$zone_num\"} $temp\n"
+                      fi
+                  fi
+              done
+              echo -e "$thermal_temps"
+          }
+
+          generate_metrics() {
+              cat << METRICS
+          # HELP node_cpu_temperature_celsius CPU temperature in Celsius
+          # TYPE node_cpu_temperature_celsius gauge
+          node_cpu_temperature_celsius $(get_cpu_temp)
+
+          # HELP node_disk_temperature_celsius Disk temperature in Celsius
+          # TYPE node_disk_temperature_celsius gauge
+          $(get_disk_temps)
+
+          # HELP node_thermal_zone_temperature_celsius Thermal zone temperature in Celsius
+          # TYPE node_thermal_zone_temperature_celsius gauge
+          $(get_thermal_zones)
+
+          # HELP node_temperature_exporter_last_update_timestamp_seconds Timestamp of last update
+          # TYPE node_temperature_exporter_last_update_timestamp_seconds gauge
+          node_temperature_exporter_last_update_timestamp_seconds $(date +%s)
+          METRICS
+          }
+
+          while true; do
+              response="HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n$(generate_metrics)"
+              echo -e "$response" | nc -l -p $PORT -q 1 >/dev/null 2>&1 || true
+              sleep 1
+          done
+          EOF
+
+          chmod +x /usr/local/bin/temperature_exporter.sh
+          exec /usr/local/bin/temperature_exporter.sh
+
+        securityContext:
+          privileged: true
+
+        volumeMounts:
+        - name: host-sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: host-dev
+          mountPath: /host/dev
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+      volumes:
+      - name: host-sys
+        hostPath:
+          path: /sys
+      - name: host-dev
+        hostPath:
+          path: /dev
+
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temperature-exporter
+  namespace: monitoring
+  labels:
+    app: temperature-exporter
+spec:
+  selector:
+    app: temperature-exporter
+  ports:
+  - name: metrics
+    port: 9101
+    targetPort: 9101
+  clusterIP: None

@@ -38,12 +38,23 @@
   become: yes
   when: inventory_hostname == groups['controlplane'][0]
 
-- name: Install Flannel CNI
-  command: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+- name: Install Calico CNI
+  shell: |
+    kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/tigera-operator.yaml
+    kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/custom-resources.yaml
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
+
+- name: Wait for Calico to be ready
+  shell: kubectl wait --for=condition=ready pod -l k8s-app=calico-node --namespace calico-system --timeout=300s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+  retries: 3
+  delay: 30
 
 - name: Generate join command
   command: kubeadm token create --print-join-command
