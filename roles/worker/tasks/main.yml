@@ -1,0 +1,9 @@
+- name: Check if worker already joined
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Join worker node
+  command: "{{ hostvars['join-info'].kubeadm_join }}"
+  when: not kubelet_conf.stat.exists
+  become: yes

@@ -1,0 +1,12 @@
+# Kubernetes version
+kube_version: "1.30.0-1.1"
+kube_version_short: "v1.30.0"
+
+# Container runtime
+containerd_version: "1.7.13-1"
+
+# Keepalived VIP configuration
+keepalived_interface: "eth0"          # Replace with correct NIC name
+keepalived_vip: "192.168.1.100"
+keepalived_auth_pass: "changeme123!"  # Change this in production
+keepalived_priority: 100             # Will be overridden per host

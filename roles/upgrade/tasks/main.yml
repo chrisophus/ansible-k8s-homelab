@@ -1,0 +1,89 @@
+- name: Unhold kubeadm for upgrade
+  apt:
+    name: kubeadm
+    state: present
+    mark_unhold: yes
+  become: yes
+
+- name: Upgrade kubeadm
+  apt:
+    name: "kubeadm={{ kube_version }}"
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Hold kubeadm after upgrade
+  apt:
+    name: kubeadm
+    state: present
+    mark_hold: yes
+  become: yes
+
+- name: kubeadm upgrade apply (first control-plane only)
+  command: kubeadm upgrade apply -y {{ kube_version_short }}
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+
+- name: kubeadm upgrade node (others)
+  command: kubeadm upgrade node
+  when: inventory_hostname != groups['controlplane'][0]
+  become: yes
+
+- name: Drain node before kubelet upgrade
+  command: kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --force --grace-period=60 --timeout=10m
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  when: "'workers' in group_names or 'controlplane' in group_names"
+  become: yes
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Unhold kubelet and kubectl for upgrade
+  apt:
+    name: "{{ item }}"
+    state: present
+    mark_unhold: yes
+  loop:
+    - kubelet
+    - kubectl
+  become: yes
+
+- name: Upgrade kubelet and kubectl
+  apt:
+    name:
+      - "kubelet={{ kube_version }}"
+      - "kubectl={{ kube_version }}"
+    state: present
+  become: yes
+
+- name: Hold kubelet and kubectl after upgrade
+  apt:
+    name: "{{ item }}"
+    state: present
+    mark_hold: yes
+  loop:
+    - kubelet
+    - kubectl
+  become: yes
+
+- name: Restart kubelet
+  systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: yes
+  become: yes
+
+- name: Uncordon node after upgrade
+  command: kubectl uncordon {{ inventory_hostname }}
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  when: "'workers' in group_names or 'controlplane' in group_names"
+  become: yes
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Ensure control-plane taints removed
+  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
+  become: yes
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf

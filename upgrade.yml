@@ -1,0 +1,10 @@
+---
+- hosts: controlplane
+  serial: 1
+  roles:
+    - upgrade
+
+- hosts: workers
+  serial: 1
+  roles:
+    - upgrade

@@ -1,0 +1,144 @@
+- name: Install unattended-upgrades
+  apt:
+    name: unattended-upgrades
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Enable unattended-upgrades
+  copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Download-Upgradeable-Packages "1";
+      APT::Periodic::AutocleanInterval "7";
+      APT::Periodic::Unattended-Upgrade "1";
+  become: yes
+
+- name: Enable automatic reboots for security updates
+  lineinfile:
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+    regexp: '^//?Unattended-Upgrade::Automatic-Reboot '
+    line: 'Unattended-Upgrade::Automatic-Reboot "true";'
+  become: yes
+
+- name: Set automatic reboot time to 03:00
+  lineinfile:
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+    regexp: '^//?Unattended-Upgrade::Automatic-Reboot-Time '
+    line: 'Unattended-Upgrade::Automatic-Reboot-Time "03:00";'
+  become: yes
+
+# Node exporter for Prometheus
+- name: Download node_exporter
+  get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz"
+    dest: /tmp/node_exporter.tar.gz
+  become: yes
+
+- name: Extract node_exporter
+  unarchive:
+    src: /tmp/node_exporter.tar.gz
+    dest: /usr/local/bin/
+    remote_src: yes
+    extra_opts: [--strip-components=1]
+  become: yes
+
+- name: Create node_exporter user
+  user:
+    name: nodeexp
+    system: yes
+    shell: /sbin/nologin
+  become: yes
+
+- name: Create systemd service for node_exporter
+  copy:
+    dest: /etc/systemd/system/node_exporter.service
+    content: |
+      [Unit]
+      Description=Prometheus Node Exporter
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      User=nodeexp
+      ExecStart=/usr/local/bin/node_exporter \
+        --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+
+      [Install]
+      WantedBy=multi-user.target
+  become: yes
+
+- name: Create textfile collector directory
+  file:
+    path: /var/lib/node_exporter/textfile_collector
+    state: directory
+    owner: nodeexp
+    group: nodeexp
+    mode: '0755'
+  become: yes
+
+- name: Enable and start node_exporter
+  systemd:
+    name: node_exporter
+    enabled: yes
+    state: started
+  become: yes
+
+# reboot_required metric
+- name: Create reboot-required metric script
+  copy:
+    dest: /usr/local/bin/reboot_metric.sh
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      METRIC_FILE="/var/lib/node_exporter/textfile_collector/reboot_required.prom"
+      if [ -f /var/run/reboot-required ]; then
+        echo "reboot_required 1" > $METRIC_FILE
+      else
+        echo "reboot_required 0" > $METRIC_FILE
+      fi
+  become: yes
+
+- name: Add cron job for reboot-required metric
+  cron:
+    name: "reboot-required metric update"
+    job: "/usr/local/bin/reboot_metric.sh"
+    minute: "*/5"
+  become: yes
+
+# Auto reboot service
+- name: Create reboot-required service
+  copy:
+    dest: /etc/systemd/system/reboot-required.service
+    content: |
+      [Unit]
+      Description=Reboot the machine if /var/run/reboot-required exists
+      ConditionPathExists=/var/run/reboot-required
+
+      [Service]
+      Type=oneshot
+      ExecStart=/sbin/shutdown -r +1 "Reboot required for security updates"
+  become: yes
+
+- name: Create reboot-required timer
+  copy:
+    dest: /etc/systemd/system/reboot-required.timer
+    content: |
+      [Unit]
+      Description=Check daily at 03:00 if reboot is required
+
+      [Timer]
+      OnCalendar=03:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  become: yes
+
+- name: Enable and start reboot-required timer
+  systemd:
+    name: reboot-required.timer
+    enabled: yes
+    state: started
+  become: yes

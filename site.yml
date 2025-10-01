@@ -1,0 +1,14 @@
+---
+- hosts: all
+  roles:
+    - common
+    - security
+
+- hosts: controlplane
+  roles:
+    - keepalived
+    - controlplane
+
+- hosts: workers
+  roles:
+    - worker

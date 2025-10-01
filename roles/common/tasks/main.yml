@@ -1,0 +1,131 @@
+- name: Load required kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+  become: yes
+
+- name: Ensure kernel modules load on boot
+  copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+  become: yes
+
+- name: Configure sysctl for Kubernetes
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { name: net.bridge.bridge-nf-call-iptables, value: 1 }
+    - { name: net.bridge.bridge-nf-call-ip6tables, value: 1 }
+    - { name: net.ipv4.ip_forward, value: 1 }
+  become: yes
+
+- name: Disable swap immediately
+  command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+  become: yes
+
+- name: Ensure swap is disabled in fstab
+  replace:
+    path: /etc/fstab
+    regexp: '(^.*\s+swap\s+.*$)'
+    replace: '# \1'
+  become: yes
+
+- name: Install dependencies
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Create apt keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: yes
+
+- name: Add Docker apt key
+  get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+  become: yes
+
+- name: Add Docker apt repository
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+  become: yes
+
+- name: Add Kubernetes apt key
+  get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+    mode: '0644'
+  become: yes
+
+- name: Add Kubernetes apt repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /"
+    state: present
+  become: yes
+
+- name: Install containerd
+  apt:
+    name:
+      - containerd.io={{ containerd_version }}
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Configure containerd
+  shell: |
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+  become: yes
+  notify: restart containerd
+
+- name: Enable and start containerd
+  systemd:
+    name: containerd
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Install kubelet, kubeadm, kubectl
+  apt:
+    name:
+      - kubelet={{ kube_version }}
+      - kubeadm={{ kube_version }}
+      - kubectl={{ kube_version }}
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Hold kube and containerd packages
+  apt:
+    name: "{{ item }}"
+    state: present
+    mark_hold: yes
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+    - containerd.io
+  become: yes

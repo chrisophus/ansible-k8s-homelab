@@ -1,0 +1,73 @@
+- name: Initialize Kubernetes cluster (only on first control-plane)
+  command: kubeadm init --control-plane-endpoint "{{ keepalived_vip }}:6443" --pod-network-cidr=10.244.0.0/16 --upload-certs
+  args:
+    creates: /etc/kubernetes/admin.conf
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+  register: kubeadm_init
+
+- name: Extract certificate key from init output
+  set_fact:
+    kubeadm_cert_key: "{{ kubeadm_init.stdout | regex_search('--certificate-key ([a-f0-9]+)', '\\1') | first }}"
+  when: inventory_hostname == groups['controlplane'][0] and kubeadm_init.changed
+
+- name: Create .kube directory for ubuntu user
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+  become: yes
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Copy kubeconfig for ubuntu user
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: yes
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  become: yes
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Install Flannel CNI
+  command: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+
+- name: Generate join command
+  command: kubeadm token create --print-join-command
+  register: join_cmd
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+
+- name: Save join command
+  set_fact:
+    kubeadm_join: "{{ join_cmd.stdout }} --ignore-preflight-errors=all"
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Share join command and cert key to all hosts
+  add_host:
+    name: "join-info"
+    kubeadm_join: "{{ hostvars[groups['controlplane'][0]].kubeadm_join }}"
+    kubeadm_cert_key: "{{ hostvars[groups['controlplane'][0]].kubeadm_cert_key | default('') }}"
+  run_once: true
+
+- name: Join additional control-plane nodes
+  command: "{{ hostvars['join-info'].kubeadm_join }} --control-plane --certificate-key {{ hostvars['join-info'].kubeadm_cert_key }}"
+  args:
+    creates: /etc/kubernetes/kubelet.conf
+  when: inventory_hostname != groups['controlplane'][0] and hostvars['join-info'].kubeadm_cert_key != ''
+  become: yes
+
+- name: Ensure control-plane nodes are schedulable
+  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
+  become: yes
