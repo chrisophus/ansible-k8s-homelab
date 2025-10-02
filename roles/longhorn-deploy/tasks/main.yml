@@ -1,0 +1,71 @@
+- name: Add Longhorn Helm repository
+  shell: helm repo add longhorn https://charts.longhorn.io
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Update Helm repositories
+  shell: helm repo update
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+
+- name: Create Longhorn namespace
+  shell: kubectl create namespace longhorn-system --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+
+- name: Install Longhorn with production settings
+  shell: |
+    helm upgrade --install longhorn longhorn/longhorn \
+      --namespace longhorn-system \
+      --set persistence.defaultClass=true \
+      --set persistence.defaultClassReplicaCount=2 \
+      --set persistence.defaultClassReclaimPolicy=Retain \
+      --set csi.kubeletRootDir=/var/lib/kubelet \
+      --set longhornManager.replicaCount=3 \
+      --set longhornDriver.replicaCount=3 \
+      --timeout 10m
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+
+- name: Wait for Longhorn manager to be ready
+  shell: kubectl wait --for=condition=ready pod -l app=longhorn-manager --namespace longhorn-system --timeout=300s
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  retries: 3
+  delay: 30
+
+- name: Wait for Longhorn driver to be ready
+  shell: kubectl wait --for=condition=ready pod -l app=longhorn-driver-deployer --namespace longhorn-system --timeout=300s
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  retries: 3
+  delay: 30
+
+- name: Verify Longhorn installation
+  shell: kubectl get pods -n longhorn-system
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  register: longhorn_pods
+
+- name: Display Longhorn pod status
+  debug:
+    var: longhorn_pods.stdout_lines
+
+- name: Check Longhorn storage class
+  shell: kubectl get storageclass longhorn
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  become_user: "{{ ansible_user }}"
+  register: longhorn_sc
+
+- name: Display Longhorn storage class
+  debug:
+    var: longhorn_sc.stdout_lines

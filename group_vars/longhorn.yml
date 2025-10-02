@@ -1,0 +1,22 @@
+# Longhorn storage configuration variables
+---
+# LVM Configuration
+longhorn_vg_name: "ubuntu-vg"              # Volume group name
+longhorn_lv_name: "longhorn-storage"       # Logical volume name
+longhorn_storage_size: "100g"              # Storage size per node
+
+# Longhorn Settings
+longhorn_data_path: "/var/lib/longhorn"    # Longhorn data directory
+longhorn_replicas: 2                       # Number of replicas per volume
+longhorn_over_provisioning: 100            # Over-provisioning percentage
+longhorn_minimal_available: 10             # Minimal available space percentage
+
+# Deployment Settings
+longhorn_namespace: "longhorn-system"      # Kubernetes namespace
+longhorn_timeout: "10m"                    # Helm installation timeout
+
+# Notes:
+# - longhorn_storage_size: Can be changed to "50g", "200g", etc.
+# - longhorn_replicas: 2 = data stored on 2 nodes, 3 = data stored on 3 nodes
+# - longhorn_over_provisioning: 100 = can allocate 100% of available space
+# - longhorn_minimal_available: 10 = stop allocating when 10% space left

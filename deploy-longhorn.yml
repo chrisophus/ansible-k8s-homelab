@@ -1,0 +1,185 @@
+---
+# Longhorn distributed storage deployment
+- name: Prepare dedicated storage for Longhorn
+  hosts: all
+  tasks:
+    - name: Check current LVM setup
+      shell: |
+        echo "=== Volume Groups ==="
+        vgs
+        echo "=== Logical Volumes ==="
+        lvs
+        echo "=== Available Space ==="
+        vgs --noheadings -o vg_free {{ longhorn_vg_name }}
+      register: lvm_status
+      become: yes
+
+    - name: Display current LVM status
+      debug:
+        var: lvm_status.stdout_lines
+
+    - name: Create raw Longhorn logical volume ({{ longhorn_storage_size }})
+      lvol:
+        vg: "{{ longhorn_vg_name }}"
+        lv: "{{ longhorn_lv_name }}"
+        size: "{{ longhorn_storage_size }}"
+        state: present
+      become: yes
+
+    - name: Verify raw storage device creation
+      shell: |
+        echo "=== Block Device Status ==="
+        lsblk /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }}
+        echo "=== Device Size ==="
+        blockdev --getsize64 /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }} | numfmt --to=iec
+        echo "=== Device Path ==="
+        ls -la /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }}
+      register: storage_verification
+      become: yes
+
+    - name: Display storage verification
+      debug:
+        var: storage_verification.stdout_lines
+
+    - name: Verify required utilities are available
+      command: which {{ item }}
+      loop:
+        - bash
+        - curl
+        - findmnt
+        - lsblk
+      register: utils_check
+      ignore_errors: yes
+
+    - name: Display utilities status
+      debug:
+        msg: "Required utilities: {{ 'All available' if utils_check.results | selectattr('rc', 'equalto', 0) | list | length == utils_check.results | length else 'Some missing' }}"
+
+    - name: Check filesystem type of root volume
+      shell: findmnt -n -o FSTYPE /
+      register: root_fstype
+
+    - name: Display filesystem information
+      debug:
+        msg: "Root filesystem: {{ root_fstype.stdout }} (ext4 recommended for optimal performance)"
+
+- name: Deploy Longhorn to cluster
+  hosts: controlplane[0]
+  tasks:
+    - name: Add Longhorn Helm repository
+      shell: helm repo add longhorn https://charts.longhorn.io
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      ignore_errors: yes
+
+    - name: Update Helm repositories
+      shell: helm repo update
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Create Longhorn namespace
+      shell: kubectl create namespace longhorn-system --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Install Longhorn with production settings and raw block device storage
+      shell: |
+        helm upgrade --install longhorn longhorn/longhorn \
+          --namespace longhorn-system \
+          --set persistence.defaultClass=true \
+          --set persistence.defaultClassReplicaCount={{ longhorn_replicas }} \
+          --set persistence.defaultClassReclaimPolicy=Retain \
+          --set csi.kubeletRootDir=/var/lib/kubelet \
+          --set longhornManager.replicaCount=3 \
+          --set longhornDriver.replicaCount=3 \
+          --set defaultSettings.storageOverProvisioningPercentage={{ longhorn_over_provisioning }} \
+          --set defaultSettings.storageMinimalAvailablePercentage={{ longhorn_minimal_available }} \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Create Longhorn data directory for block device management
+      file:
+        path: "{{ longhorn_data_path }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      become: yes
+
+    - name: Wait for Longhorn manager to be ready
+      shell: kubectl wait --for=condition=ready pod -l app=longhorn-manager --namespace longhorn-system --timeout=300s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      retries: 3
+      delay: 30
+
+    - name: Wait for Longhorn driver to be ready
+      shell: kubectl wait --for=condition=ready pod -l app=longhorn-driver-deployer --namespace longhorn-system --timeout=300s
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      retries: 3
+      delay: 30
+
+    - name: Verify Longhorn installation
+      shell: kubectl get pods -n longhorn-system
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      register: longhorn_pods
+
+    - name: Display Longhorn pod status
+      debug:
+        var: longhorn_pods.stdout_lines
+
+    - name: Check Longhorn storage class
+      shell: kubectl get storageclass longhorn
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      register: longhorn_sc
+
+    - name: Display Longhorn storage class
+      debug:
+        var: longhorn_sc.stdout_lines
+
+    - name: Display Longhorn access information
+      debug:
+        msg: |
+          🐄 Longhorn Distributed Storage Deployed!
+
+          📊 Longhorn UI Access:
+          - Port forward: kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+          - Access: http://localhost:8080
+
+          🔧 Storage Configuration:
+          - Storage Class: longhorn (default)
+          - Raw Block Devices: {{ longhorn_storage_size }} per node ({{ (longhorn_storage_size | regex_replace('g', '') | int * 3) }}GB total)
+          - Replicas: {{ longhorn_replicas }} ({{ ((longhorn_storage_size | regex_replace('g', '') | int * 3) / longhorn_replicas) | int }}GB effective capacity)
+          - Reclaim Policy: Retain
+          - Block Devices: /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }} on each node
+
+          💾 Storage Layout:
+          - plex: {{ longhorn_storage_size }} raw LV at /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }}
+          - kube1: {{ longhorn_storage_size }} raw LV at /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }}
+          - kube2: {{ longhorn_storage_size }} raw LV at /dev/{{ longhorn_vg_name }}/{{ longhorn_lv_name }}
+
+          🔍 Verify deployment:
+          kubectl get pods -n longhorn-system
+          kubectl get storageclass longhorn
+          kubectl get pv
+          lsblk | grep {{ longhorn_lv_name }}  # Check raw devices
+
+          📝 Next steps:
+          - Access Longhorn UI to configure discovered disks
+          - Add block devices to Longhorn nodes via UI
+          - Set up backup targets if needed
+          - Update applications to use longhorn storage class
+
+          💡 Benefits: Raw block devices, optimal performance, Longhorn manages filesystem!

@@ -1,0 +1,9 @@
+---
+# Main Longhorn deployment playbook
+- hosts: all
+  roles:
+    - longhorn
+
+- hosts: controlplane[0]
+  roles:
+    - longhorn-deploy

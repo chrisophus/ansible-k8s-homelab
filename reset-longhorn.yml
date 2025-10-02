@@ -1,0 +1,86 @@
+---
+# Reset Longhorn storage system
+- name: Reset Longhorn storage
+  hosts: controlplane[0]
+  tasks:
+    - name: Delete all PVCs using Longhorn storage
+      shell: |
+        kubectl get pvc --all-namespaces -o json | \
+        jq -r '.items[] | select(.spec.storageClassName == "longhorn") | "\(.metadata.namespace) \(.metadata.name)"' | \
+        while read namespace name; do
+          echo "Deleting PVC $name in namespace $namespace"
+          kubectl delete pvc $name -n $namespace --ignore-not-found=true
+        done
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      ignore_errors: yes
+
+    - name: Delete all PVs using Longhorn storage
+      shell: |
+        kubectl get pv -o json | \
+        jq -r '.items[] | select(.spec.storageClassName == "longhorn") | .metadata.name' | \
+        while read name; do
+          echo "Deleting PV $name"
+          kubectl delete pv $name --ignore-not-found=true
+        done
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      ignore_errors: yes
+
+    - name: Uninstall Longhorn Helm release
+      shell: helm uninstall longhorn --namespace longhorn-system
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      ignore_errors: yes
+
+    - name: Delete Longhorn namespace
+      shell: kubectl delete namespace longhorn-system --ignore-not-found=true
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+
+    - name: Remove Longhorn Helm repository
+      shell: helm repo remove longhorn
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      become_user: "{{ ansible_user }}"
+      ignore_errors: yes
+
+- name: Clean up Longhorn data directories on all nodes
+  hosts: all
+  tasks:
+    - name: Remove Longhorn data directories
+      shell: |
+        # Remove Longhorn data directories
+        rm -rf /var/lib/longhorn
+        rm -rf /opt/longhorn
+        # Clean up any remaining Longhorn mounts
+        umount -l /var/lib/longhorn 2>/dev/null || true
+        umount -l /opt/longhorn 2>/dev/null || true
+      become: yes
+      ignore_errors: yes
+
+- name: Display reset completion
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: Display reset completion message
+      debug:
+        msg: |
+          🧹 Longhorn Storage Reset Complete!
+
+          ✅ Actions completed:
+          - Deleted all Longhorn PVCs
+          - Deleted all Longhorn PVs
+          - Uninstalled Longhorn Helm release
+          - Removed Longhorn namespace
+          - Cleaned up data directories
+
+          🔍 Verify cleanup:
+          kubectl get pvc --all-namespaces
+          kubectl get pv
+          kubectl get pods --all-namespaces | grep longhorn

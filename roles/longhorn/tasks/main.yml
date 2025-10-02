@@ -1,0 +1,46 @@
+- name: Install open-iscsi
+  apt:
+    name: open-iscsi
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Enable and start iscsid
+  systemd:
+    name: iscsid
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Install NFS client for RWX support
+  apt:
+    name: nfs-common
+    state: present
+  become: yes
+
+- name: Verify required utilities are available
+  command: which {{ item }}
+  loop:
+    - bash
+    - curl
+    - findmnt
+    - grep
+    - awk
+    - blkid
+    - lsblk
+  register: utils_check
+  ignore_errors: yes
+
+- name: Display utilities status
+  debug:
+    msg: "Required utilities: {{ 'All available' if utils_check.results | selectattr('rc', 'equalto', 0) | list | length == utils_check.results | length else 'Some missing' }}"
+
+- name: Verify filesystem supports file extents
+  command: tune2fs -l /dev/sda1 | grep extent
+  register: extents_check
+  become: yes
+  ignore_errors: yes
+
+- name: Display filesystem extents status
+  debug:
+    msg: "Filesystem extents support: {{ 'Supported' if extents_check.rc == 0 else 'Not supported - may need different filesystem' }}"
