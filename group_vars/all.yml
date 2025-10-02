@@ -1,9 +1,9 @@
-# Kubernetes version
-kube_version: "1.31.0-1.1"
-kube_version_short: "v1.31.0"
+# Kubernetes version (use flexible versioning)
+kube_version: "1.32.*"
+kube_version_short: "v1.32"
 
-# Container runtime
-containerd_version: "1.7.13-1"
+# Container runtime (use flexible versioning)
+containerd_version: "1.7.*"
 
 # Keepalived VIP configuration
 keepalived_interface: "enp3s0"        # Ethernet interface found on all nodes

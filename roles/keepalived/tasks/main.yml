@@ -5,6 +5,13 @@
     update_cache: yes
   become: yes
 
+- name: Create keepalived config directory
+  file:
+    path: /etc/keepalived
+    state: directory
+    mode: '0755'
+  become: yes
+
 - name: Configure keepalived
   template:
     src: keepalived.conf.j2

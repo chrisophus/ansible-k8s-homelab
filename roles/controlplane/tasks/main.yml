@@ -38,26 +38,34 @@
   become: yes
   when: inventory_hostname == groups['controlplane'][0]
 
-- name: Install Calico CNI
+- name: Copy Calico custom resources
+  copy:
+    src: ../../k8s-manifests/calico-custom-resources.yaml
+    dest: /tmp/calico-custom-resources.yaml
+    mode: '0644'
+  when: inventory_hostname == groups['controlplane'][0]
+  become: yes
+
+- name: Install Calico CNI (using local server during bootstrap)
   shell: |
-    kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/tigera-operator.yaml
-    kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/custom-resources.yaml
+    kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 create -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/tigera-operator.yaml
+    kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 create -f /tmp/calico-custom-resources.yaml
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
 
-- name: Wait for Calico to be ready
-  shell: kubectl wait --for=condition=ready pod -l k8s-app=calico-node --namespace calico-system --timeout=300s
+- name: Wait for tigera-operator to be ready (using local server)
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 wait --for=condition=ready pod -l k8s-app=tigera-operator --namespace tigera-operator --timeout=300s
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
   retries: 3
-  delay: 30
+  delay: 10
 
 - name: Generate join command
-  command: kubeadm token create --print-join-command
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 --kubeconfig=/etc/kubernetes/admin.conf create token kube-bootstrap-token --print-join-command || kubeadm token create --print-join-command
   register: join_cmd
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
@@ -86,7 +94,7 @@
   become: yes
 
 - name: Ensure control-plane nodes are schedulable
-  shell: kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+  shell: kubectl --server=https://{{ ansible_default_ipv4.address }}:6443 taint nodes --all node-role.kubernetes.io/control-plane- || true
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   delegate_to: "{{ groups['controlplane'][0] }}"
