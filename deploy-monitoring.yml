@@ -80,10 +80,12 @@
       retries: 3
       delay: 30
 
-    - name: Deploy custom exporters
-      shell: kubectl apply -f /tmp/k8s-manifests/custom-exporters/
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+    - name: Copy monitoring manifests
+      copy:
+        src: k8s-manifests/monitoring/
+        dest: /tmp/k8s-manifests/monitoring/
+        mode: '0644'
       become_user: "{{ ansible_user }}"
 
     - name: Deploy alerting rules
@@ -99,13 +101,6 @@
         mode: '0644'
       become_user: "{{ ansible_user }}"
 
-    - name: Wait for custom exporters to be ready
-      shell: kubectl wait --for=condition=ready pod -l app=temperature-exporter --namespace monitoring --timeout=120s
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      become_user: "{{ ansible_user }}"
-      retries: 2
-      delay: 15
 
     - name: Display monitoring access information
       debug:
@@ -123,11 +118,14 @@
           🚨 AlertManager:
           - URL: http://{{ keepalived_vip }}:9093
 
-          🌡️  Custom Metrics (auto-discovered):
-          - Temperature DaemonSet: Running on all nodes
-          - Reboot Status DaemonSet: Running on all nodes
-          - ServiceMonitors: Auto-discovery enabled
+          🌡️  Built-in Hardware Monitoring:
+          - Node Exporter: CPU/disk temperatures via node_hwmon_temp_celsius
+          - System metrics: CPU, memory, disk, network on all nodes
+          - Auto-discovery: ServiceMonitors enabled for all metrics
 
           🔍 Check deployment:
           kubectl get pods -n monitoring
           kubectl get servicemonitors -n monitoring
+
+          🌡️  View temperatures in Prometheus:
+          Query: node_hwmon_temp_celsius{chip=~"platform_coretemp.*"}

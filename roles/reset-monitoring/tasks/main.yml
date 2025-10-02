@@ -9,12 +9,8 @@
   become_user: "{{ ansible_user }}"
   ignore_errors: yes
 
-- name: Delete custom monitoring DaemonSets
+- name: Delete custom monitoring resources
   shell: |
-    kubectl delete daemonset temperature-exporter -n monitoring || true
-    kubectl delete daemonset reboot-exporter -n monitoring || true
-    kubectl delete servicemonitor temperature-exporter -n monitoring || true
-    kubectl delete servicemonitor reboot-exporter -n monitoring || true
     kubectl delete prometheusrule homelab-alerting-rules -n monitoring || true
   environment:
     KUBECONFIG: /home/{{ ansible_user }}/.kube/config
@@ -49,4 +45,4 @@
 
 - name: Display reset status
   debug:
-    msg: "Monitoring stack has been reset. Helm releases, DaemonSets, and namespace removed."
+    msg: "Monitoring stack has been reset. Helm releases and namespace removed."
