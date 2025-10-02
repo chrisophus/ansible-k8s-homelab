@@ -35,6 +35,12 @@ grafana:
     storageClassName: local-path
     size: 10Gi
 
+  # Fix security context to prevent permission issues
+  securityContext:
+    fsGroup: 472
+    runAsUser: 472
+    runAsGroup: 472
+
   grafana.ini:
     server:
       root_url: "http://192.168.0.100:3000"

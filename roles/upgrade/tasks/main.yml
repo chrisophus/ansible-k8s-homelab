@@ -1,13 +1,13 @@
 - name: Add new Kubernetes apt key for target version
   get_url:
-    url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
-    dest: /etc/apt/keyrings/kubernetes-apt-keyring-v1.31.asc
+    url: "https://pkgs.k8s.io/core:/stable:/{{ kube_target_version_short }}/deb/Release.key"
+    dest: "/etc/apt/keyrings/kubernetes-apt-keyring-{{ kube_target_version_short }}.asc"
     mode: '0644'
   become: yes
 
 - name: Add new Kubernetes apt repository for target version
   apt_repository:
-    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring-v1.31.asc] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring-{{ kube_target_version_short }}.asc] https://pkgs.k8s.io/core:/stable:/{{ kube_target_version_short }}/deb/ /"
     state: present
   become: yes
 
@@ -23,7 +23,7 @@
 
 - name: Upgrade kubeadm
   apt:
-    name: "kubeadm={{ kube_version }}"
+    name: "kubeadm={{ kube_target_version }}"
     state: present
     update_cache: yes
   become: yes
@@ -33,8 +33,17 @@
   become: yes
   changed_when: false
 
+- name: Get the exact kubeadm version
+  command: kubeadm version -o short
+  register: kubeadm_version_output
+  become: yes
+
+- name: Extract kubeadm version
+  set_fact:
+    kubeadm_exact_version: "{{ kubeadm_version_output.stdout }}"
+
 - name: kubeadm upgrade apply (first control-plane only)
-  command: kubeadm upgrade apply -y {{ kube_version_short }}
+  command: kubeadm upgrade apply -y {{ kubeadm_exact_version }}
   when: inventory_hostname == groups['controlplane'][0]
   become: yes
 
@@ -66,8 +75,8 @@
 - name: Upgrade kubelet and kubectl
   apt:
     name:
-      - "kubelet={{ kube_version }}"
-      - "kubectl={{ kube_version }}"
+      - "kubelet={{ kube_target_version }}"
+      - "kubectl={{ kube_target_version }}"
     state: present
   become: yes
 

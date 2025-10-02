@@ -2,6 +2,10 @@
 kube_version: "1.32.*"
 kube_version_short: "v1.32"
 
+# Target Kubernetes version for both install and upgrade
+kube_target_version: "1.33.*"
+kube_target_version_short: "v1.33"
+
 # Container runtime (use flexible versioning)
 containerd_version: "1.7.*"
 
