@@ -1,4 +1,0 @@
-# Keep SSH keys out of git
-id_*
-*.pub
-*.pem
